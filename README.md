@@ -1,5 +1,7 @@
 # Michael's Dashboard
 
+> Michael's dashboard — helps organize and manage the business more efficiently.
+
 A clickable **prototype** of a unified, read-only business dashboard for
 Michael's two businesses — a **watch repair shop** and **rental properties** —
 with role-based access (**Owner** vs **Employee**).
