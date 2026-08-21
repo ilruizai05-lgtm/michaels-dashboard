@@ -1,0 +1,2269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Client Portal — Pitch Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script>
+/**
+ * <deck-stage> — reusable web component for HTML decks.
+ *
+ * Handles:
+ *  (a) speaker notes — reads <script type="application/json" id="speaker-notes">
+ *      and posts {slideIndexChanged: N} to the parent window on nav.
+ *  (b) keyboard navigation — ←/→, PgUp/PgDn, Space, Home/End, number keys.
+ *  (c) press R to reset to slide 0 (with a tasteful keyboard hint).
+ *  (d) bottom-center overlay showing slide count + hints, fades out on idle.
+ *  (e) auto-scaling — inner canvas is a fixed design size (default 1920×1080)
+ *      scaled with `transform: scale()` to fit the viewport, letterboxed.
+ *      Set the `noscale` attribute to render at authored size (1:1) — the
+ *      PPTX exporter sets this so its DOM capture sees unscaled geometry.
+ *  (f) print — `@media print` lays every slide out as its own page at the
+ *      design size, so the browser's Print → Save as PDF produces a clean
+ *      one-page-per-slide PDF with no extra setup.
+ *
+ * Slides are HIDDEN, not unmounted. Non-active slides stay in the DOM with
+ * `visibility: hidden` + `opacity: 0`, so their state (videos, iframes,
+ * form inputs, React trees) is preserved across navigation.
+ *
+ * Lifecycle event — the component dispatches a `slidechange` CustomEvent on
+ * itself whenever the active slide changes (including the initial mount).
+ * The event bubbles and composes out of shadow DOM, so you can listen on
+ * the <deck-stage> element or on document:
+ *
+ *   document.querySelector('deck-stage').addEventListener('slidechange', (e) => {
+ *     e.detail.index         // new 0-based index
+ *     e.detail.previousIndex // previous index, or -1 on init
+ *     e.detail.total         // total slide count
+ *     e.detail.slide         // the new active slide element
+ *     e.detail.previousSlide // the prior slide element, or null on init
+ *     e.detail.reason        // 'init' | 'keyboard' | 'click' | 'tap' | 'api'
+ *   });
+ *
+ * Persistence: none at the deck level. The host app keeps the current slide
+ * in its own URL (?slide=) and re-delivers it via location.hash on load, so a
+ * bare load with no hash always starts at slide 1.
+ *
+ * Usage:
+ *   <deck-stage width="1920" height="1080">
+ *     <section data-label="Title">...</section>
+ *     <section data-label="Agenda">...</section>
+ *   </deck-stage>
+ *
+ * Slides are the direct element children of <deck-stage>. Each slide is
+ * automatically tagged with:
+ *   - data-screen-label="NN Label"   (1-indexed, for comment flow)
+ *   - data-om-validate="no_overflowing_text,no_overlapping_text,slide_sized_text"
+ */
+
+(() => {
+  const DESIGN_W_DEFAULT = 1920;
+  const DESIGN_H_DEFAULT = 1080;
+  const OVERLAY_HIDE_MS = 1800;
+  const VALIDATE_ATTR = 'no_overflowing_text,no_overlapping_text,slide_sized_text';
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  const stylesheet = `
+    :host {
+      position: fixed;
+      inset: 0;
+      display: block;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      overflow: hidden;
+    }
+
+    .stage {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .canvas {
+      position: relative;
+      transform-origin: center center;
+      flex-shrink: 0;
+      background: #fff;
+      will-change: transform;
+    }
+
+    /* Slides live in light DOM (via <slot>) so authored CSS still applies.
+       We absolutely position each slotted child to stack them. */
+    ::slotted(*) {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      box-sizing: border-box !important;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+    }
+    ::slotted([data-deck-active]) {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+    }
+
+    /* Tap zones for mobile — back/forward thirds like Stories.
+       Transparent, no visible UI, don't block the overlay. */
+    .tapzones {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      z-index: 2147482000;
+      pointer-events: none;
+    }
+    .tapzone {
+      flex: 1;
+      pointer-events: auto;
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* Only activate tap zones on coarse pointers (touch devices). */
+    @media (hover: hover) and (pointer: fine) {
+      .tapzones { display: none; }
+    }
+
+    .overlay {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      transform: translate(-50%, 6px) scale(0.92);
+      filter: blur(6px);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      background: #000;
+      color: #fff;
+      border-radius: 999px;
+      font-size: 12px;
+      font-feature-settings: "tnum" 1;
+      letter-spacing: 0.01em;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 260ms ease, transform 260ms cubic-bezier(.2,.8,.2,1), filter 260ms ease;
+      transform-origin: center bottom;
+      z-index: 2147483000;
+      user-select: none;
+    }
+    .overlay[data-visible] {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translate(-50%, 0) scale(1);
+      filter: blur(0);
+    }
+
+    .btn {
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+      border: 0;
+      margin: 0;
+      padding: 0;
+      color: inherit;
+      font: inherit;
+      cursor: default;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 28px;
+      min-width: 28px;
+      border-radius: 999px;
+      color: rgba(255,255,255,0.72);
+      transition: background 140ms ease, color 140ms ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    .btn:active { background: rgba(255,255,255,0.18); }
+    .btn:focus { outline: none; }
+    .btn:focus-visible { outline: none; }
+    .btn::-moz-focus-inner { border: 0; }
+    .btn svg { width: 14px; height: 14px; display: block; }
+    .btn.reset {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      padding: 0 10px 0 12px;
+      gap: 6px;
+      color: rgba(255,255,255,0.72);
+    }
+    .btn.reset .kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 10px;
+      line-height: 1;
+      color: rgba(255,255,255,0.88);
+      background: rgba(255,255,255,0.12);
+      border-radius: 4px;
+    }
+
+    .count {
+      font-variant-numeric: tabular-nums;
+      color: #fff;
+      font-weight: 500;
+      padding: 0 8px;
+      min-width: 42px;
+      text-align: center;
+      font-size: 12px;
+    }
+    .count .sep { color: rgba(255,255,255,0.45); margin: 0 3px; font-weight: 400; }
+    .count .total { color: rgba(255,255,255,0.55); }
+
+    .divider {
+      width: 1px;
+      height: 14px;
+      background: rgba(255,255,255,0.18);
+      margin: 0 2px;
+    }
+
+    /* ── Print: one page per slide, no chrome ────────────────────────────
+       The screen layout stacks every slide at inset:0 inside a scaled
+       canvas; for print we want them in document flow at the authored
+       design size so the browser paginates one slide per sheet. The
+       @page size is set from the width/height attributes via the inline
+       <style id="deck-stage-print-page"> that connectedCallback injects
+       into <head> (the @page at-rule has no effect inside shadow DOM). */
+    @media print {
+      :host {
+        position: static;
+        inset: auto;
+        background: none;
+        overflow: visible;
+        color: inherit;
+      }
+      .stage { position: static; display: block; }
+      .canvas {
+        transform: none !important;
+        width: auto !important;
+        height: auto !important;
+        background: none;
+        will-change: auto;
+      }
+      ::slotted(*) {
+        position: relative !important;
+        inset: auto !important;
+        width: var(--deck-design-w) !important;
+        height: var(--deck-design-h) !important;
+        box-sizing: border-box !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        pointer-events: auto;
+        break-after: page;
+        page-break-after: always;
+        break-inside: avoid;
+        overflow: hidden;
+      }
+      ::slotted(*:last-child) {
+        break-after: auto;
+        page-break-after: auto;
+      }
+      .overlay, .tapzones { display: none !important; }
+    }
+  `;
+
+  class DeckStage extends HTMLElement {
+    static get observedAttributes() { return ['width', 'height', 'noscale']; }
+
+    constructor() {
+      super();
+      this._root = this.attachShadow({ mode: 'open' });
+      this._index = 0;
+      this._slides = [];
+      this._notes = [];
+      this._hideTimer = null;
+      this._mouseIdleTimer = null;
+
+      this._onKey = this._onKey.bind(this);
+      this._onResize = this._onResize.bind(this);
+      this._onSlotChange = this._onSlotChange.bind(this);
+      this._onMouseMove = this._onMouseMove.bind(this);
+      this._onTapBack = this._onTapBack.bind(this);
+      this._onTapForward = this._onTapForward.bind(this);
+    }
+
+    get designWidth() {
+      return parseInt(this.getAttribute('width'), 10) || DESIGN_W_DEFAULT;
+    }
+    get designHeight() {
+      return parseInt(this.getAttribute('height'), 10) || DESIGN_H_DEFAULT;
+    }
+
+    connectedCallback() {
+      this._render();
+      this._loadNotes();
+      this._syncPrintPageRule();
+      window.addEventListener('keydown', this._onKey);
+      window.addEventListener('resize', this._onResize);
+      window.addEventListener('mousemove', this._onMouseMove, { passive: true });
+      // Initial collection + layout happens via slotchange, which fires on mount.
+    }
+
+    disconnectedCallback() {
+      window.removeEventListener('keydown', this._onKey);
+      window.removeEventListener('resize', this._onResize);
+      window.removeEventListener('mousemove', this._onMouseMove);
+      if (this._hideTimer) clearTimeout(this._hideTimer);
+      if (this._mouseIdleTimer) clearTimeout(this._mouseIdleTimer);
+    }
+
+    attributeChangedCallback() {
+      if (this._canvas) {
+        this._canvas.style.width = this.designWidth + 'px';
+        this._canvas.style.height = this.designHeight + 'px';
+        this._canvas.style.setProperty('--deck-design-w', this.designWidth + 'px');
+        this._canvas.style.setProperty('--deck-design-h', this.designHeight + 'px');
+        this._fit();
+        this._syncPrintPageRule();
+      }
+    }
+
+    _render() {
+      const style = document.createElement('style');
+      style.textContent = stylesheet;
+
+      const stage = document.createElement('div');
+      stage.className = 'stage';
+
+      const canvas = document.createElement('div');
+      canvas.className = 'canvas';
+      canvas.style.width = this.designWidth + 'px';
+      canvas.style.height = this.designHeight + 'px';
+      canvas.style.setProperty('--deck-design-w', this.designWidth + 'px');
+      canvas.style.setProperty('--deck-design-h', this.designHeight + 'px');
+
+      const slot = document.createElement('slot');
+      slot.addEventListener('slotchange', this._onSlotChange);
+      canvas.appendChild(slot);
+      stage.appendChild(canvas);
+
+      // Tap zones (mobile): left third = back, right third = forward.
+      const tapzones = document.createElement('div');
+      tapzones.className = 'tapzones export-hidden';
+      tapzones.setAttribute('aria-hidden', 'true');
+      tapzones.setAttribute('data-noncommentable', '');
+      const tzBack = document.createElement('div');
+      tzBack.className = 'tapzone tapzone--back';
+      const tzMid = document.createElement('div');
+      tzMid.className = 'tapzone tapzone--mid';
+      tzMid.style.pointerEvents = 'none';
+      const tzFwd = document.createElement('div');
+      tzFwd.className = 'tapzone tapzone--fwd';
+      tzBack.addEventListener('click', this._onTapBack);
+      tzFwd.addEventListener('click', this._onTapForward);
+      tapzones.append(tzBack, tzMid, tzFwd);
+
+      // Overlay: compact, solid black, with clickable controls.
+      const overlay = document.createElement('div');
+      overlay.className = 'overlay export-hidden';
+      overlay.setAttribute('role', 'toolbar');
+      overlay.setAttribute('aria-label', 'Deck controls');
+      overlay.setAttribute('data-noncommentable', '');
+      overlay.innerHTML = `
+        <button class="btn prev" type="button" aria-label="Previous slide" title="Previous (←)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>
+        </button>
+        <span class="count" aria-live="polite"><span class="current">1</span><span class="sep">/</span><span class="total">1</span></span>
+        <button class="btn next" type="button" aria-label="Next slide" title="Next (→)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+        </button>
+        <span class="divider"></span>
+        <button class="btn reset" type="button" aria-label="Reset to first slide" title="Reset (R)">Reset<span class="kbd">R</span></button>
+      `;
+
+      overlay.querySelector('.prev').addEventListener('click', () => this._go(this._index - 1, 'click'));
+      overlay.querySelector('.next').addEventListener('click', () => this._go(this._index + 1, 'click'));
+      overlay.querySelector('.reset').addEventListener('click', () => this._go(0, 'click'));
+
+      this._root.append(style, stage, tapzones, overlay);
+      this._canvas = canvas;
+      this._slot = slot;
+      this._overlay = overlay;
+      this._countEl = overlay.querySelector('.current');
+      this._totalEl = overlay.querySelector('.total');
+    }
+
+    /** @page must live in the document stylesheet — it's a no-op inside
+     *  shadow DOM. Inject/update a single <head> style tag so the print
+     *  sheet matches the design size and Save-as-PDF yields one slide per
+     *  page with no margins. */
+    _syncPrintPageRule() {
+      const id = 'deck-stage-print-page';
+      let tag = document.getElementById(id);
+      if (!tag) {
+        tag = document.createElement('style');
+        tag.id = id;
+        document.head.appendChild(tag);
+      }
+      tag.textContent =
+        '@page { size: ' + this.designWidth + 'px ' + this.designHeight + 'px; margin: 0; } ' +
+        '@media print { html, body { margin: 0 !important; padding: 0 !important; background: none !important; overflow: visible !important; height: auto !important; } ' +
+        '* { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }';
+    }
+
+    _onSlotChange() {
+      this._collectSlides();
+      this._restoreIndex();
+      this._applyIndex({ showOverlay: false, broadcast: true, reason: 'init' });
+      this._fit();
+    }
+
+    _collectSlides() {
+      const assigned = this._slot.assignedElements({ flatten: true });
+      this._slides = assigned.filter((el) => {
+        // Skip template/style/script nodes even if someone slots them.
+        const tag = el.tagName;
+        return tag !== 'TEMPLATE' && tag !== 'SCRIPT' && tag !== 'STYLE';
+      });
+
+      this._slides.forEach((slide, i) => {
+        const n = i + 1;
+        // Determine a label for comment flow: prefer explicit data-label,
+        // then an existing data-screen-label, then first heading, else "Slide".
+        let label = slide.getAttribute('data-label');
+        if (!label) {
+          const existing = slide.getAttribute('data-screen-label');
+          if (existing) {
+            // Strip any leading number the author may have included.
+            label = existing.replace(/^\s*\d+\s*/, '').trim() || existing;
+          }
+        }
+        if (!label) {
+          const h = slide.querySelector('h1, h2, h3, [data-title]');
+          if (h) label = (h.textContent || '').trim().slice(0, 40);
+        }
+        if (!label) label = 'Slide';
+        slide.setAttribute('data-screen-label', `${pad2(n)} ${label}`);
+
+        // Validation attribute for comment flow / auto-checks.
+        if (!slide.hasAttribute('data-om-validate')) {
+          slide.setAttribute('data-om-validate', VALIDATE_ATTR);
+        }
+
+        slide.setAttribute('data-deck-slide', String(i));
+      });
+
+      if (this._totalEl) this._totalEl.textContent = String(this._slides.length || 1);
+      if (this._index >= this._slides.length) this._index = Math.max(0, this._slides.length - 1);
+    }
+
+    _loadNotes() {
+      const tag = document.getElementById('speaker-notes');
+      if (!tag) { this._notes = []; return; }
+      try {
+        const parsed = JSON.parse(tag.textContent || '[]');
+        if (Array.isArray(parsed)) this._notes = parsed;
+      } catch (e) {
+        console.warn('[deck-stage] Failed to parse #speaker-notes JSON:', e);
+        this._notes = [];
+      }
+    }
+
+    _restoreIndex() {
+      // The host's ?slide= param is delivered as a #<int> hash (1-indexed) on
+      // the iframe src. No hash → slide 1; the deck itself keeps no position
+      // state across loads.
+      const h = (location.hash || '').match(/^#(\d+)$/);
+      if (h) {
+        const n = parseInt(h[1], 10) - 1;
+        if (n >= 0 && n < this._slides.length) this._index = n;
+      }
+    }
+
+    _applyIndex({ showOverlay = true, broadcast = true, reason = 'init' } = {}) {
+      if (!this._slides.length) return;
+      const prev = this._prevIndex == null ? -1 : this._prevIndex;
+      const curr = this._index;
+      // Keep the iframe's own hash in sync so an in-iframe location.reload()
+      // (reload banner path in viewer-handle.ts) lands on the current slide,
+      // not the stale deep-link hash from initial load.
+      try { history.replaceState(null, '', '#' + (curr + 1)); } catch (e) {}
+      this._slides.forEach((s, i) => {
+        if (i === curr) s.setAttribute('data-deck-active', '');
+        else s.removeAttribute('data-deck-active');
+      });
+      if (this._countEl) this._countEl.textContent = String(curr + 1);
+
+      if (broadcast) {
+        // (1) Legacy: host-window postMessage for speaker-notes renderers.
+        try { window.postMessage({ slideIndexChanged: curr }, '*'); } catch (e) {}
+
+        // (2) In-page CustomEvent on the <deck-stage> element itself.
+        //     Bubbles and composes out of shadow DOM so slide code can listen:
+        //       document.querySelector('deck-stage').addEventListener('slidechange', e => {
+        //         e.detail.index, e.detail.previousIndex, e.detail.total, e.detail.slide, e.detail.reason
+        //       });
+        const detail = {
+          index: curr,
+          previousIndex: prev,
+          total: this._slides.length,
+          slide: this._slides[curr] || null,
+          previousSlide: prev >= 0 ? (this._slides[prev] || null) : null,
+          reason: reason, // 'init' | 'keyboard' | 'click' | 'tap' | 'api'
+        };
+        this.dispatchEvent(new CustomEvent('slidechange', {
+          detail,
+          bubbles: true,
+          composed: true,
+        }));
+      }
+
+      this._prevIndex = curr;
+      if (showOverlay) this._flashOverlay();
+    }
+
+    _flashOverlay() {
+      if (!this._overlay) return;
+      this._overlay.setAttribute('data-visible', '');
+      if (this._hideTimer) clearTimeout(this._hideTimer);
+      this._hideTimer = setTimeout(() => {
+        this._overlay.removeAttribute('data-visible');
+      }, OVERLAY_HIDE_MS);
+    }
+
+    _fit() {
+      if (!this._canvas) return;
+      // PPTX export sets noscale so the DOM capture sees authored-size
+      // geometry — the scaled canvas is in shadow DOM, so the exporter's
+      // resetTransformSelector can't reach .canvas.style.transform directly.
+      if (this.hasAttribute('noscale')) {
+        this._canvas.style.transform = 'none';
+        return;
+      }
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const s = Math.min(vw / this.designWidth, vh / this.designHeight);
+      this._canvas.style.transform = `scale(${s})`;
+    }
+
+    _onResize() { this._fit(); }
+
+    _onMouseMove() {
+      // Keep overlay visible while mouse moves; hide after idle.
+      this._flashOverlay();
+    }
+
+    _onTapBack(e) {
+      e.preventDefault();
+      this._go(this._index - 1, 'tap');
+    }
+
+    _onTapForward(e) {
+      e.preventDefault();
+      this._go(this._index + 1, 'tap');
+    }
+
+    _onKey(e) {
+      // Ignore when the user is typing.
+      const t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const key = e.key;
+      let handled = true;
+
+      if (key === 'ArrowRight' || key === 'PageDown' || key === ' ' || key === 'Spacebar') {
+        this._go(this._index + 1, 'keyboard');
+      } else if (key === 'ArrowLeft' || key === 'PageUp') {
+        this._go(this._index - 1, 'keyboard');
+      } else if (key === 'Home') {
+        this._go(0, 'keyboard');
+      } else if (key === 'End') {
+        this._go(this._slides.length - 1, 'keyboard');
+      } else if (key === 'r' || key === 'R') {
+        this._go(0, 'keyboard');
+      } else if (/^[0-9]$/.test(key)) {
+        // 1..9 jump to that slide; 0 jumps to 10.
+        const n = key === '0' ? 9 : parseInt(key, 10) - 1;
+        if (n < this._slides.length) this._go(n, 'keyboard');
+      } else {
+        handled = false;
+      }
+
+      if (handled) {
+        e.preventDefault();
+        this._flashOverlay();
+      }
+    }
+
+    _go(i, reason = 'api') {
+      if (!this._slides.length) return;
+      const clamped = Math.max(0, Math.min(this._slides.length - 1, i));
+      if (clamped === this._index) {
+        this._flashOverlay();
+        return;
+      }
+      this._index = clamped;
+      this._applyIndex({ showOverlay: true, broadcast: true, reason });
+    }
+
+    // Public API ------------------------------------------------------------
+
+    /** Current slide index (0-based). */
+    get index() { return this._index; }
+    /** Total slide count. */
+    get length() { return this._slides.length; }
+    /** Programmatically navigate. */
+    goTo(i) { this._go(i, 'api'); }
+    next() { this._go(this._index + 1, 'api'); }
+    prev() { this._go(this._index - 1, 'api'); }
+    reset() { this._go(0, 'api'); }
+  }
+
+  if (!customElements.get('deck-stage')) {
+    customElements.define('deck-stage', DeckStage);
+  }
+})();
+
+</script>
+<script type="application/json" id="speaker-notes">
+[
+  "Hey Michael — thanks for making time. What I want to walk through today is a single dashboard that pulls your watch business and your rental properties into one view, so you can stop hopping between Square, TurboTenant, and SimplyWise to see how things are doing. I'll cover what I heard in our discovery call, what I'm proposing to build, what's in scope for phase one, and what the investment looks like. Should take about twenty minutes — please stop me whenever.",
+  "Right now there's no central record of anything. Watch repairs are written by hand on the envelope. Customer info — maybe a name and a phone number, sometimes more, sometimes nothing. You can't text customers from the landlines, voicemails go unreturned. You sell across in-store, Facebook, eBay, consignments — Square only sees the in-store slice. And on the rental side, rent comes through TurboTenant, Venmo, Cash App, Zelle, sometimes cash. Expenses live in a manual spreadsheet you reconcile at year-end.",
+  "Three things stood out from our discovery. One: repair intake is the biggest gap — there's no system, just envelopes. Once you have the work cell, intake becomes photograph, type, print, done. Two: customers can't be reached — landlines don't text and voicemails don't get returned. A simple repair-ready SMS will pay for itself in fewer missed pickups. Three: don't replace what works. TurboTenant and Square stay; the dashboard fills the holes around them.",
+  "So the proposal is a read-only dashboard. It pulls live data from Square, TurboTenant, and SimplyWise through their APIs, lays it out in one screen, and triggers a small set of automated emails from your business address. Nothing replaces the source systems. If TurboTenant goes down, your rent collection still happens — the dashboard just shows stale data until it comes back.",
+  "Here's a rough sketch of what the dashboard looks like. Top strip is the at-a-glance: rent collected this month, watch repairs in progress, total income, total expenses, both businesses side by side. Below that, two columns — rentals on the left, watches on the right — with the things that actually need your attention: late rent, repairs ready for pickup, expiring leases, low parts inventory.",
+  "Quick note on access, since I know you're planning to bring on help at the watch counter. The dashboard is built for two roles from day one. Owner login — that's you — sees everything we just looked at: watches and rentals together. Employee login sees the watch business and only the watch business. The rentals side isn't hidden behind a tab or greyed out — it's literally not in their navigation. They never see a tenant name, a rent balance, or even know the rentals dashboard exists. Same system, two completely different views depending on who logs in.",
+  "And here's what that employee view actually looks like. Same look and feel, same shop floor and intake panels — but rentals, finances, employee admin, activity log, all gone. They get exactly the tools they need to run repairs, intake new watches, and update statuses, and nothing else. You can add or remove employee accounts yourself from your dashboard — no developer needed — and there's an activity log on your side that shows who did what and when, which is the standard expectation when more than one person can touch the system.",
+  "This is the piece you specifically asked for — a mobile page on the work cell for logging a new repair the moment a watch comes in the door. You snap a few photos, fill the fields, tap save. The dashboard gets the job, the customer record gets created or updated, and the printer spits out a repair envelope so your shop workflow doesn't change. When the watch is ready, one tap sends a text from your business number straight to the customer's cell.",
+  "I want to be really clear about this because it matters legally and operationally. TurboTenant stays the system of record for leases, rent payments, security deposits, and tenant screening. Square stays the system of record for sales, invoices, and customer payments. The dashboard reads from them — it never writes back. That keeps you out of any payment-processing or landlord-compliance gray area, and it means if you ever stop using the dashboard, nothing breaks.",
+  "Three automations in phase one. First and biggest: repair-ready SMS — you mark the watch ready, the customer gets a text from your business number. This is the one that pays back the fastest. Second: rent reminders sent on the first from your business email — courtesy notices, not legal ones. Third: a Monday morning summary to you — what's late, what's ready, what came in last week.",
+  "Two recommendations on the tooling side. Google Workspace: I'd say yes — it gives you a real business email and unlocks the automation I just described much more cleanly than iCloud will. About six dollars a month per user. QuickBooks: I'd say not yet. SimplyWise plus the dashboard's expense view will get you through phase one. We can revisit at tax time if your accountant pushes for it.",
+  "Quick note on Virginia. Anything that touches rent collection, late fees, security deposits, or notices is governed by the Virginia Residential Landlord and Tenant Act. Because we're keeping TurboTenant as the system of record, they're handling that compliance for us. The dashboard's rent reminders are courtesy notices only — they don't carry legal weight, and we'll word them that way. If you ever need to send a formal notice, that still happens through TurboTenant or your attorney.",
+  "Phase one is scoped tight on purpose. In: the dashboard, the mobile repair intake with printable envelope, a customer database that builds itself from intake, the three read-only integrations, the three automations including the repair SMS, and thirty days of support. Phase two candidates we've already talked about: parts inventory, multi-channel sales rollup including Facebook and eBay, Airbnb income with property-level expenses, vendor directory, shipping. We have a clear roadmap — phase one earns the right to do phase two.",
+  "Six to eight weeks of build time, broken into three milestones. Investment is a fixed fee for phase one plus a small monthly for hosting and maintenance. The fixed fee covers everything in scope — no hourly surprises. Numbers on screen are the proposed range; happy to walk through what drives them.",
+  "If this looks right to you, the next step is for me to send a written scope document and proposal this week. You sign, I start, and we'll have our first working version of the dashboard in your hands inside three weeks. Any questions before we wrap?"
+]
+</script>
+<style>
+  :root {
+    --cream: #F5F1EA;
+    --cream-2: #EBE5D9;
+    --ink: #1A2420;
+    --ink-soft: #3A4A42;
+    --ink-mute: #6B7972;
+    --green: #2D5A4A;
+    --green-deep: #1F3F34;
+    --gold: #B8924A;
+    --rule: #D9D2C2;
+    --rule-soft: #E5DFD0;
+  }
+  html, body { margin: 0; background: #0E1714; }
+  body { font-family: "Geist", -apple-system, system-ui, sans-serif; color: var(--ink); }
+
+  deck-stage section {
+    background: var(--cream);
+    color: var(--ink);
+    overflow: hidden;
+  }
+  .slide {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 100px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  .slide-pad-bottom { padding-bottom: 80px; }
+
+  /* type */
+  .eyebrow {
+    font-family: "Geist Mono", monospace;
+    font-size: 22px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin: 0 0 32px;
+    font-weight: 500;
+  }
+  .title {
+    font-family: "Fraunces", serif;
+    font-weight: 400;
+    font-size: 84px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    margin: 0;
+    text-wrap: balance;
+  }
+  .title-sm {
+    font-family: "Fraunces", serif;
+    font-weight: 400;
+    font-size: 64px;
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    margin: 0 0 52px;
+    text-wrap: balance;
+  }
+  .subtitle {
+    font-size: 36px;
+    line-height: 1.35;
+    color: var(--ink-soft);
+    font-weight: 400;
+    margin: 28px 0 0;
+    max-width: 1200px;
+    text-wrap: pretty;
+  }
+  .body {
+    font-size: 32px;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    text-wrap: pretty;
+  }
+  .small {
+    font-size: 26px;
+    line-height: 1.45;
+    color: var(--ink-mute);
+  }
+  .mono {
+    font-family: "Geist Mono", monospace;
+  }
+  .num-display {
+    font-family: "Fraunces", serif;
+    font-weight: 400;
+    font-size: 200px;
+    line-height: 0.9;
+    letter-spacing: -0.04em;
+  }
+
+  /* slide-number footer */
+  .footer {
+    position: absolute;
+    left: 100px;
+    right: 100px;
+    bottom: 48px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: "Geist Mono", monospace;
+    font-size: 20px;
+    color: var(--ink-mute);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* section variants */
+  .bg-deep {
+    background: var(--green-deep) !important;
+    color: var(--cream) !important;
+  }
+  .bg-deep .title, .bg-deep .title-sm { color: var(--cream); }
+  .bg-deep .subtitle, .bg-deep .body { color: #C8D4CD; }
+  .bg-deep .eyebrow, .bg-deep .small { color: #8CA398; }
+  .bg-deep .footer { color: #6E8579; }
+
+  .bg-cream2 { background: var(--cream-2) !important; }
+
+  /* utility */
+  .row { display: flex; gap: 28px; }
+  .col { display: flex; flex-direction: column; }
+  .grow { flex: 1; }
+  .gap-28 { gap: 28px; }
+  .gap-52 { gap: 52px; }
+
+  /* horizontal rule */
+  .hr { height: 1px; background: var(--rule); border: 0; margin: 0; }
+  .bg-deep .hr { background: #2F4E42; }
+
+  /* tables / lists */
+  .item-list { display: flex; flex-direction: column; gap: 28px; }
+  .item-list .item {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 28px;
+    padding: 24px 0;
+    border-top: 1px solid var(--rule);
+    align-items: baseline;
+  }
+  .item-list .item:last-child { border-bottom: 1px solid var(--rule); }
+  .item-list .num {
+    font-family: "Geist Mono", monospace;
+    font-size: 22px;
+    color: var(--ink-mute);
+    letter-spacing: 0.08em;
+    padding-top: 14px;
+  }
+  .item-list .item-title {
+    font-family: "Fraunces", serif;
+    font-size: 38px;
+    line-height: 1.25;
+    margin: 0 0 8px;
+    color: var(--ink);
+  }
+  .item-list .item-desc {
+    font-size: 26px;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    text-wrap: pretty;
+  }
+  .bg-deep .item-list .item { border-top-color: #2F4E42; }
+  .bg-deep .item-list .item:last-child { border-bottom-color: #2F4E42; }
+  .bg-deep .item-list .num { color: #8CA398; }
+  .bg-deep .item-list .item-title { color: var(--cream); }
+  .bg-deep .item-list .item-desc { color: #C8D4CD; }
+
+  /* tag */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--green);
+    border: 1px solid var(--green);
+    padding: 8px 14px;
+    border-radius: 999px;
+    font-weight: 500;
+  }
+  .tag.gold { color: var(--gold); border-color: var(--gold); }
+  .tag.muted { color: var(--ink-mute); border-color: var(--rule); }
+  .bg-deep .tag { color: var(--cream); border-color: #6E8579; }
+
+  /* dashboard mock */
+  .mock {
+    background: #FBFAF6;
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    box-shadow: 0 24px 48px -24px rgba(20, 30, 25, 0.18), 0 2px 0 rgba(20,30,25,0.04);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  .mock-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--rule);
+    background: #F1ECE0;
+  }
+  .mock-bar .dot { width: 12px; height: 12px; border-radius: 50%; background: #D2C9B5; }
+  .mock-bar .url {
+    margin-left: 14px;
+    font-family: "Geist Mono", monospace;
+    font-size: 14px;
+    color: var(--ink-mute);
+    background: #FBFAF6;
+    border: 1px solid var(--rule);
+    padding: 5px 12px;
+    border-radius: 6px;
+  }
+  .mock-body {
+    padding: 28px 32px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    flex: 1;
+    min-height: 0;
+  }
+  .mock-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  .mock-brand {
+    font-family: "Fraunces", serif;
+    font-size: 24px;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .mock-brand .dot-g { color: var(--green); }
+  .mock-month {
+    font-family: "Geist Mono", monospace;
+    font-size: 13px;
+    color: var(--ink-mute);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .kpi {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .kpi .lbl {
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .kpi .val {
+    font-family: "Fraunces", serif;
+    font-size: 30px;
+    line-height: 1.1;
+    margin-top: 4px;
+    color: var(--ink);
+  }
+  .kpi .sub {
+    font-size: 12px;
+    color: var(--ink-mute);
+    margin-top: 2px;
+  }
+  .kpi.green .val { color: var(--green); }
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; flex: 1; min-height: 0; }
+  .panel {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+  }
+  .panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--rule-soft);
+    padding-bottom: 10px;
+  }
+  .panel-title {
+    font-family: "Fraunces", serif;
+    font-size: 18px;
+    color: var(--ink);
+  }
+  .panel-src {
+    font-family: "Geist Mono", monospace;
+    font-size: 10px;
+    color: var(--ink-mute);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .row-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: baseline;
+  }
+  .row-item:last-child { border-bottom: 0; }
+  .row-item .lhs { font-size: 14px; color: var(--ink); }
+  .row-item .lhs small { display: block; color: var(--ink-mute); font-size: 11px; margin-top: 2px; }
+  .row-item .rhs {
+    font-family: "Geist Mono", monospace;
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-family: "Geist Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .pill.green { background: #E1ECDF; color: var(--green-deep); }
+  .pill.gold  { background: #F2E8D1; color: #7A5F22; }
+  .pill.red   { background: #F2DCD6; color: #8A3D26; }
+  .pill.gray  { background: #ECE7DA; color: var(--ink-mute); }
+
+  /* table */
+  table.tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 26px;
+  }
+  table.tbl th, table.tbl td {
+    text-align: left;
+    padding: 22px 16px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    line-height: 1.35;
+    color: var(--ink-soft);
+  }
+  table.tbl th {
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    font-weight: 500;
+    border-bottom: 1px solid var(--ink-soft);
+  }
+  table.tbl td.k {
+    font-family: "Fraunces", serif;
+    font-size: 30px;
+    color: var(--ink);
+  }
+
+  /* timeline */
+  .timeline {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .tl-cell {
+    padding: 36px 32px 36px 0;
+    border-right: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .tl-cell:last-child { border-right: 0; padding-right: 0; }
+  .tl-cell:not(:first-child) { padding-left: 32px; }
+  .tl-num {
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    color: var(--gold);
+    letter-spacing: 0.12em;
+  }
+  .tl-h {
+    font-family: "Fraunces", serif;
+    font-size: 36px;
+    line-height: 1.15;
+    color: var(--ink);
+    margin: 0;
+  }
+  .tl-d {
+    font-size: 22px;
+    color: var(--ink-soft);
+    line-height: 1.4;
+  }
+
+  /* logo strip */
+  .logo-strip {
+    display: flex;
+    gap: 28px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .logo-chip {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    background: #FBFAF6;
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+  .logo-chip .sw {
+    width: 14px; height: 14px; border-radius: 4px;
+    background: var(--green);
+  }
+  .logo-chip.b .sw { background: #1A1A1A; }
+  .logo-chip.c .sw { background: var(--gold); }
+  .logo-chip.d .sw { background: #6B7972; }
+
+  /* big quote / pull */
+  .pull {
+    font-family: "Fraunces", serif;
+    font-size: 56px;
+    line-height: 1.18;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    text-wrap: balance;
+  }
+  .bg-deep .pull { color: var(--cream); }
+
+  /* arrows */
+  .flow {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    gap: 24px;
+    align-items: center;
+  }
+  .flow-card {
+    border: 1px solid var(--rule);
+    background: #FBFAF6;
+    border-radius: 12px;
+    padding: 32px 28px;
+    text-align: left;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .flow-card .ttl {
+    font-family: "Fraunces", serif;
+    font-size: 32px;
+    line-height: 1.2;
+    color: var(--ink);
+  }
+  .flow-card .src {
+    font-family: "Geist Mono", monospace;
+    font-size: 16px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .flow-card .desc { font-size: 20px; color: var(--ink-soft); line-height: 1.4; }
+  .flow-arrow {
+    font-family: "Geist Mono", monospace;
+    font-size: 26px;
+    color: var(--gold);
+  }
+
+  /* in/out grid */
+  .scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; }
+  .scope-h {
+    font-family: "Geist Mono", monospace;
+    font-size: 22px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin: 0 0 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .scope-h.in { color: var(--green); border-bottom-color: var(--green); }
+  .scope-h.out { color: var(--ink-mute); }
+  .scope-list { display: flex; flex-direction: column; gap: 18px; }
+  .scope-item {
+    font-family: "Fraunces", serif;
+    font-size: 30px;
+    line-height: 1.25;
+    color: var(--ink);
+  }
+  .scope-item.muted { color: var(--ink-mute); }
+  .scope-item small {
+    display: block;
+    margin-top: 6px;
+    font-family: "Geist", sans-serif;
+    font-size: 18px;
+    color: var(--ink-mute);
+    line-height: 1.4;
+  }
+
+  /* investment */
+  .invest-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    overflow: hidden;
+    background: #FBFAF6;
+  }
+  .invest-cell { padding: 56px 56px; border-right: 1px solid var(--rule); }
+  .invest-cell:last-child { border-right: 0; background: #F1ECE0; }
+  .invest-lbl {
+    font-family: "Geist Mono", monospace;
+    font-size: 22px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin: 0 0 18px;
+  }
+  .invest-num {
+    font-family: "Fraunces", serif;
+    font-size: 96px;
+    line-height: 1;
+    color: var(--ink);
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+  .invest-sub { font-size: 24px; color: var(--ink-soft); }
+
+  /* recommendation cards */
+  .rec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  .rec-card {
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 44px 40px;
+    background: #FBFAF6;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    min-height: 460px;
+  }
+  .rec-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .rec-name {
+    font-family: "Fraunces", serif;
+    font-size: 44px;
+    color: var(--ink);
+    margin: 0;
+  }
+  .rec-verdict {
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+    border-radius: 999px;
+  }
+  .rec-verdict.yes { background: #E1ECDF; color: var(--green-deep); }
+  .rec-verdict.no  { background: #ECE7DA; color: var(--ink-mute); }
+  .rec-why {
+    font-size: 24px;
+    color: var(--ink-soft);
+    line-height: 1.45;
+  }
+  .rec-meta {
+    margin-top: auto;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    color: var(--ink-mute);
+    letter-spacing: 0.06em;
+  }
+  .rec-meta b { color: var(--ink); font-weight: 500; }
+
+  /* cover */
+  .cover {
+    padding: 100px;
+    height: 100%;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    background:
+      radial-gradient(circle at 88% 12%, rgba(184,146,74,0.10), transparent 45%),
+      var(--green-deep);
+    color: var(--cream);
+  }
+  .cover .brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-family: "Geist Mono", monospace;
+    font-size: 22px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #C8D4CD;
+  }
+  .cover .brand .mark {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--gold);
+    box-shadow: 0 0 0 4px rgba(184,146,74,0.18);
+  }
+  .cover-title {
+    font-family: "Fraunces", serif;
+    font-weight: 400;
+    font-size: 144px;
+    line-height: 0.96;
+    letter-spacing: -0.03em;
+    color: var(--cream);
+    margin: 0;
+    align-self: end;
+    max-width: 1500px;
+    text-wrap: balance;
+  }
+  .cover-meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+    border-top: 1px solid #2F4E42;
+    padding-top: 32px;
+  }
+  .cover-meta .cell .l {
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #8CA398;
+    margin: 0 0 10px;
+  }
+  .cover-meta .cell .v {
+    font-family: "Fraunces", serif;
+    font-size: 30px;
+    color: var(--cream);
+    margin: 0;
+  }
+
+  /* problem mosaic */
+  .mosaic { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+  .mosaic .tile {
+    background: #FBFAF6;
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 36px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 180px;
+  }
+  .mosaic .tool {
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .mosaic .what {
+    font-family: "Fraunces", serif;
+    font-size: 30px;
+    line-height: 1.25;
+    color: var(--ink);
+  }
+  .mosaic .where {
+    font-size: 20px;
+    color: var(--ink-soft);
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--rule);
+    font-family: "Geist Mono", monospace;
+    letter-spacing: 0.06em;
+  }
+
+  /* discovery quotes */
+  .heard {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 28px;
+  }
+  .heard-card {
+    background: #FBFAF6;
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 40px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  .heard-card .num {
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    color: var(--gold);
+    letter-spacing: 0.14em;
+  }
+  .heard-card .h {
+    font-family: "Fraunces", serif;
+    font-size: 32px;
+    line-height: 1.2;
+    color: var(--ink);
+    margin: 0;
+  }
+  .heard-card .d {
+    font-size: 22px;
+    line-height: 1.45;
+    color: var(--ink-soft);
+  }
+
+  /* compliance bullets */
+  .comp-grid {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    row-gap: 36px;
+    column-gap: 56px;
+    border-top: 1px solid var(--rule);
+  }
+  .comp-grid > div {
+    padding: 28px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .comp-k {
+    font-family: "Geist Mono", monospace;
+    font-size: 20px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--green);
+    padding-top: 36px !important;
+  }
+  .comp-v {
+    font-family: "Fraunces", serif;
+    font-size: 30px;
+    line-height: 1.3;
+    color: var(--ink);
+  }
+  .comp-v small {
+    display: block;
+    margin-top: 8px;
+    font-family: "Geist", sans-serif;
+    font-size: 20px;
+    color: var(--ink-soft);
+    line-height: 1.45;
+  }
+
+  /* phone frame for repair intake */
+  .phone {
+    width: 380px;
+    height: 780px;
+    background: #1a1a1a;
+    border-radius: 48px;
+    padding: 12px;
+    box-shadow: 0 30px 60px -20px rgba(20,30,25,0.35), 0 0 0 1px #0a0a0a;
+    position: relative;
+  }
+  .phone-notch {
+    position: absolute;
+    top: 22px; left: 50%; transform: translateX(-50%);
+    width: 110px; height: 28px; background: #0a0a0a;
+    border-radius: 999px; z-index: 2;
+  }
+  .phone-screen {
+    background: #FBFAF6;
+    border-radius: 36px;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    position: relative;
+  }
+  .ph-statusbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 32px 6px;
+    font-family: "Geist", sans-serif;
+    font-size: 14px; font-weight: 600;
+    color: var(--ink);
+  }
+  .ph-icons { display: inline-flex; gap: 6px; align-items: center; color: var(--ink); }
+  .ph-app-head {
+    display: grid;
+    grid-template-columns: 60px 1fr 60px;
+    align-items: center;
+    padding: 14px 18px 12px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .ph-back { font-size: 28px; color: var(--green); line-height: 1; }
+  .ph-title {
+    font-family: "Fraunces", serif; font-size: 20px;
+    text-align: center; color: var(--ink);
+  }
+  .ph-save {
+    text-align: right;
+    font-family: "Geist Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--gold);
+    font-weight: 600;
+  }
+  .ph-body {
+    flex: 1;
+    overflow: hidden;
+    padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .ph-photo-row { display: flex; gap: 10px; }
+  .ph-photo {
+    width: 96px; height: 96px;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--rule);
+    flex-shrink: 0;
+  }
+  .ph-photo-img {
+    width: 100%; height: 100%;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ph-watch {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #c9b896, #6e5d3f 60%, #2c2418);
+    box-shadow: inset 0 0 0 3px #1a1410, 0 2px 8px rgba(0,0,0,0.4);
+    position: relative;
+  }
+  .ph-watch::before {
+    content: ''; position: absolute;
+    inset: 8px; border-radius: 50%;
+    background: radial-gradient(circle at 40% 35%, #2a2520, #0a0806);
+  }
+  .ph-watch::after {
+    content: ''; position: absolute;
+    top: 50%; left: 50%;
+    width: 2px; height: 16px;
+    background: #c9b896;
+    transform: translate(-50%, -90%) rotate(35deg);
+    transform-origin: bottom center;
+  }
+  .ph-watch-side {
+    width: 50px; height: 50px;
+    background: linear-gradient(90deg, #4a3f2a, #8a7654, #4a3f2a);
+    border-radius: 16px;
+  }
+  .ph-watch-side::before, .ph-watch-side::after { display: none; }
+  .ph-photo-add {
+    width: 96px; height: 96px;
+    border-radius: 14px;
+    border: 1.5px dashed var(--green);
+    background: rgba(45,90,74,0.04);
+    color: var(--green);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 4px;
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .ph-field { display: flex; flex-direction: column; gap: 4px; }
+  .ph-field label {
+    font-family: "Geist Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .ph-input {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 9px 11px;
+    font-size: 13px;
+    color: var(--ink);
+    line-height: 1.35;
+    min-height: 18px;
+  }
+  .ph-input-tall { min-height: 50px; }
+  .ph-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .ph-home {
+    position: absolute;
+    bottom: 8px; left: 50%; transform: translateX(-50%);
+    width: 120px; height: 4px;
+    background: var(--ink); opacity: 0.35;
+    border-radius: 999px;
+  }
+
+  /* end slide */
+  .end-cta {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 80px;
+    flex: 1;
+  }
+  .end-num {
+    font-family: "Geist Mono", monospace;
+    font-size: 22px;
+    letter-spacing: 0.14em;
+    color: var(--gold);
+  }
+  .next-list {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    margin-top: 36px;
+  }
+  .next-row {
+    display: grid;
+    grid-template-columns: 80px 1fr auto;
+    gap: 28px;
+    padding: 24px 0;
+    border-top: 1px solid #2F4E42;
+    align-items: baseline;
+  }
+  .next-row:last-child { border-bottom: 1px solid #2F4E42; }
+  .next-step {
+    font-family: "Geist Mono", monospace;
+    font-size: 20px;
+    color: #8CA398;
+    letter-spacing: 0.12em;
+  }
+  .next-h {
+    font-family: "Fraunces", serif;
+    font-size: 36px;
+    color: var(--cream);
+    line-height: 1.2;
+  }
+  .next-when {
+    font-family: "Geist Mono", monospace;
+    font-size: 18px;
+    color: #8CA398;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+
+<deck-stage width="1920" height="1080">
+
+<!-- 1. COVER -->
+<section data-label="01 Cover">
+  <div class="cover">
+    <div class="brand">
+      <div class="mark"></div>
+      <div>Full Bloom AI · Engagement Pitch</div>
+    </div>
+    <h1 class="cover-title">One dashboard for two&nbsp;businesses.</h1>
+    <div class="cover-meta">
+      <div class="cell">
+        <p class="l">Prepared for</p>
+        <p class="v">Michael — Watch &amp; Rentals</p>
+      </div>
+      <div class="cell">
+        <p class="l">Prepared by</p>
+        <p class="v">Full Bloom AI LLC</p>
+      </div>
+      <div class="cell">
+        <p class="l">Date</p>
+        <p class="v">April 2026</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 2. PROBLEM -->
+<section data-label="02 Problem">
+  <div class="slide">
+    <p class="eyebrow">01 — The Problem</p>
+    <h2 class="title-sm">No central record. Everything's in someone's head.</h2>
+    <div class="mosaic">
+      <div class="tile">
+        <div class="tool">Watch repairs</div>
+        <div class="what">Handwritten on the repair envelope. No customer database, no parts inventory, no warranty log.</div>
+        <div class="where">500+ customers · mostly repeat</div>
+      </div>
+      <div class="tile">
+        <div class="tool">Customer contact</div>
+        <div class="what">Voicemail only — landlines can't text. Emails rarely reach. Some customers we have full info, some just a name.</div>
+        <div class="where">Calls go unreturned</div>
+      </div>
+      <div class="tile">
+        <div class="tool">Sales channels</div>
+        <div class="what">In-store, Facebook, eBay, consignments, buy/sell. Square only sees the in-store slice.</div>
+        <div class="where">5 channels · 1 ledger</div>
+      </div>
+      <div class="tile">
+        <div class="tool">Rentals</div>
+        <div class="what">Long-term, two Airbnbs, flips. Rent paid via TurboTenant, Venmo, Cash App, Zelle, cash. Expenses tracked manually.</div>
+        <div class="where">5+ payment channels</div>
+      </div>
+    </div>
+    <div class="footer"><span>Full Bloom AI</span><span>02 / 15</span></div>
+  </div>
+</section>
+
+<!-- 3. WHAT WE HEARD -->
+<section data-label="03 Discovery">
+  <div class="slide">
+    <p class="eyebrow">02 — Discovery</p>
+    <h2 class="title-sm">What we heard.</h2>
+    <div class="heard">
+      <div class="heard-card">
+        <div class="num">01</div>
+        <h3 class="h">Repair intake is the biggest gap.</h3>
+        <p class="d">Today it's a handwritten envelope. With a work cell, intake becomes: photograph the watch, type the details, print the envelope, customer logged.</p>
+      </div>
+      <div class="heard-card">
+        <div class="num">02</div>
+        <h3 class="h">Customers can't be reached easily.</h3>
+        <p class="d">Landlines can't text. Voicemails don't get returned. A simple "your watch is ready" SMS would cut pickup time and missed calls dramatically.</p>
+      </div>
+      <div class="heard-card">
+        <div class="num">03</div>
+        <h3 class="h">Don't replace what works.</h3>
+        <p class="d">TurboTenant and Square stay. The dashboard pulls them together and fills the holes around them — customer records, intake, expenses by property.</p>
+      </div>
+    </div>
+    <div class="footer"><span>Full Bloom AI</span><span>03 / 15</span></div>
+  </div>
+</section>
+
+<!-- 4. PROPOSED SOLUTION -->
+<section data-label="04 Solution" class="bg-deep">
+  <div class="slide">
+    <p class="eyebrow">03 — The Proposal</p>
+    <h2 class="title-sm">A read-only dashboard that pulls from all four.</h2>
+    <div class="flow" style="margin-top: 32px;">
+      <div class="flow-card" style="background:#fff; border-color:#2F4E42;">
+        <div class="src">Sources</div>
+        <div class="ttl" style="font-size:28px;">Square · TurboTenant · SimplyWise · Google Workspace</div>
+        <div class="desc" style="color: var(--ink-soft);">Live data from each platform's API. Nothing replaced.</div>
+      </div>
+      <div class="flow-arrow" style="color: var(--gold);">———▶</div>
+      <div class="flow-card" style="background:#fff; border-color:#2F4E42;">
+        <div class="src">Dashboard</div>
+        <div class="ttl">Unified view + alerts.</div>
+        <div class="desc" style="color: var(--ink-soft);">One screen. Both businesses. Read-only — never writes back to source systems.</div>
+      </div>
+      <div class="flow-arrow" style="color: var(--gold);">———▶</div>
+      <div class="flow-card" style="background:#fff; border-color:#2F4E42;">
+        <div class="src">Outputs</div>
+        <div class="ttl">Automated emails &amp; weekly summary.</div>
+        <div class="desc" style="color: var(--ink-soft);">Sent from your business address on a schedule you set.</div>
+      </div>
+    </div>
+    <p class="body" style="margin-top: 56px; max-width: 1500px; color:#C8D4CD;">If a source system goes down, your business keeps running. The dashboard just shows stale data until it comes back.</p>
+    <div class="footer"><span>Full Bloom AI</span><span>04 / 15</span></div>
+  </div>
+</section>
+
+<!-- 5. MOCKUP -->
+<section data-label="05 Mockup">
+  <div class="slide" style="padding: 80px 100px;">
+    <p class="eyebrow">04 — What it looks like</p>
+    <h2 class="title-sm" style="margin-bottom: 28px;">Both businesses on one screen.</h2>
+    <div class="mock" style="flex:1; min-height:0;">
+      <div class="mock-bar">
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        <div class="url">app.fullbloom.ai/michael</div>
+      </div>
+      <div class="mock-body">
+        <div class="mock-head">
+          <div class="mock-brand"><span class="dot-g">●</span> Michael's Dashboard</div>
+          <div class="mock-month">April 2026 · Updated 9:42 am</div>
+        </div>
+        <div class="kpi-row">
+          <div class="kpi green">
+            <div class="lbl">Rent collected</div>
+            <div class="val">$11,400</div>
+            <div class="sub">5 of 6 properties · 1 outstanding</div>
+          </div>
+          <div class="kpi">
+            <div class="lbl">Repairs in progress</div>
+            <div class="val">7</div>
+            <div class="sub">2 ready for pickup</div>
+          </div>
+          <div class="kpi">
+            <div class="lbl">MTD income</div>
+            <div class="val">$15,820</div>
+            <div class="sub">Watches + rent combined</div>
+          </div>
+          <div class="kpi">
+            <div class="lbl">MTD expenses</div>
+            <div class="val">$3,210</div>
+            <div class="sub">Parts, repairs, hosting</div>
+          </div>
+        </div>
+        <div class="panels">
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title">Rentals — needs attention</div>
+              <div class="panel-src">TurboTenant</div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">412 Locust St · Unit B<small>Rent due Apr 1 · 4 days late</small></div>
+              <div class="rhs"><span class="pill red">Late</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">88 Ridge Way<small>Lease expires Jun 30 · renew?</small></div>
+              <div class="rhs"><span class="pill gold">Renewal</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">220 Bell Ave<small>Maintenance request open · 2d</small></div>
+              <div class="rhs"><span class="pill gray">Open</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">17 Court Pl<small>Rent received Apr 1</small></div>
+              <div class="rhs"><span class="pill green">Paid</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title">Watches — needs attention</div>
+              <div class="panel-src">Square</div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Omega Seamaster · D. Hayes<small>Crystal replaced · ready Apr 28</small></div>
+              <div class="rhs"><span class="pill green">Pickup</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Rolex Submariner · M. Chen<small>Awaiting parts · ETA May 3</small></div>
+              <div class="rhs"><span class="pill gold">Parts</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Tag Heuer Carrera · J. Park<small>Diagnosed · quote sent</small></div>
+              <div class="rhs"><span class="pill gray">Quote</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Cartier Tank · L. Ortiz<small>Battery + service · in progress</small></div>
+              <div class="rhs"><span class="pill gold">Active</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="footer" style="bottom: 32px;"><span>Full Bloom AI · concept mockup</span><span>05 / 15</span></div>
+  </div>
+</section>
+
+<!-- 6. ACCESS MODEL — DUAL LOGIN -->
+<section data-label="06 Access Model" class="bg-cream2">
+  <div class="slide">
+    <p class="eyebrow">05 — Access model</p>
+    <h2 class="title-sm">Two logins. One system.</h2>
+    <p class="body" style="max-width: 1500px; margin: -20px 0 56px; font-size: 30px;">You'll have help at the watch counter eventually. The dashboard is built for that day one — your employees can log in to run the watch business without ever seeing a single rental property, lease balance, or tenant name.</p>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 28px; flex: 1; min-height: 0;">
+      <!-- OWNER -->
+      <div style="background:#FBFAF6; border:1px solid var(--rule); border-radius:14px; padding: 44px 44px; display:flex; flex-direction:column; gap: 24px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline;">
+          <div>
+            <div class="mono" style="font-size:18px; letter-spacing:0.14em; text-transform:uppercase; color:var(--gold);">Role 01</div>
+            <h3 style="font-family:'Fraunces',serif; font-size:54px; line-height:1; margin:10px 0 0; color:var(--ink);">Owner</h3>
+          </div>
+          <span class="tag gold" style="white-space:nowrap;">Full access</span>
+        </div>
+        <p class="body" style="font-size:24px; margin:0;">Sees everything. Watches and rentals, side-by-side, exactly the screen we just looked at.</p>
+        <div style="border-top:1px solid var(--rule); padding-top:20px; display:grid; grid-template-columns:24px 1fr; row-gap:14px; column-gap:14px; align-items:start;">
+          <span class="mono" style="font-size:18px; color:var(--green); letter-spacing:0.1em; line-height:1.45;">+</span><span style="font-size:22px; color:var(--ink); line-height:1.4;">Watch repairs &amp; intake</span>
+          <span class="mono" style="font-size:18px; color:var(--green); letter-spacing:0.1em; line-height:1.45;">+</span><span style="font-size:22px; color:var(--ink); line-height:1.4;">Rentals (TurboTenant)</span>
+          <span class="mono" style="font-size:18px; color:var(--green); letter-spacing:0.1em; line-height:1.45;">+</span><span style="font-size:22px; color:var(--ink); line-height:1.4;">Income, expenses, automations</span>
+          <span class="mono" style="font-size:18px; color:var(--green); letter-spacing:0.1em; line-height:1.45;">+</span><span style="font-size:22px; color:var(--ink); line-height:1.4;">Employee accounts &amp; activity log</span>
+        </div>
+      </div>
+
+      <!-- EMPLOYEE -->
+      <div style="background:#FBFAF6; border:1px solid var(--rule); border-radius:14px; padding: 44px 44px; display:flex; flex-direction:column; gap: 24px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline;">
+          <div>
+            <div class="mono" style="font-size:18px; letter-spacing:0.14em; text-transform:uppercase; color:var(--ink-mute);">Role 02</div>
+            <h3 style="font-family:'Fraunces',serif; font-size:54px; line-height:1; margin:10px 0 0; color:var(--ink);">Employee</h3>
+          </div>
+          <span class="tag muted" style="white-space:nowrap;">Watch only</span>
+        </div>
+        <p class="body" style="font-size:24px; margin:0;">Sees the watch side and nothing else. The rentals dashboard is gone — not hidden behind a tab, not greyed out, just absent from the navigation.</p>
+        <div style="border-top:1px solid var(--rule); padding-top:20px; display:grid; grid-template-columns:24px 1fr; row-gap:14px; column-gap:14px; align-items:start;">
+          <span class="mono" style="font-size:18px; color:var(--green); letter-spacing:0.1em; line-height:1.45;">+</span><span style="font-size:22px; color:var(--ink); line-height:1.4;">Repair intake (mobile)</span>
+          <span class="mono" style="font-size:18px; color:var(--green); letter-spacing:0.1em; line-height:1.45;">+</span><span style="font-size:22px; color:var(--ink); line-height:1.4;">Repair tickets &amp; status</span>
+          <span class="mono" style="font-size:18px; color:var(--green); letter-spacing:0.1em; line-height:1.45;">+</span><span style="font-size:22px; color:var(--ink); line-height:1.4;">Customer records (watch only)</span>
+          <span class="mono" style="font-size:18px; color:#A14A2A; letter-spacing:0.1em; line-height:1.45;">—</span><span style="font-size:22px; color:var(--ink-mute); line-height:1.4;">Rentals · finances · employee admin</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer"><span>Full Bloom AI</span><span>06 / 15</span></div>
+  </div>
+</section>
+
+<!-- 7. EMPLOYEE VIEW MOCKUP -->
+<section data-label="07 Employee View">
+  <div class="slide" style="padding: 80px 100px;">
+    <p class="eyebrow">06 — What the employee sees</p>
+    <h2 class="title-sm" style="margin-bottom: 28px;">Same dashboard. Watch side only.</h2>
+    <div class="mock" style="flex:1; min-height:0;">
+      <div class="mock-bar">
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        <div class="url">app.fullbloom.ai/shop</div>
+        <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+          <span class="mono" style="font-size:11px; letter-spacing:0.1em; text-transform:uppercase; color:var(--ink-mute);">Signed in as</span>
+          <span style="display:inline-flex; align-items:center; gap:8px; font-family:'Geist Mono',monospace; font-size:12px; color:var(--ink); background:#FBFAF6; border:1px solid var(--rule); padding:5px 12px; border-radius:999px;"><span style="width:8px; height:8px; border-radius:50%; background:var(--gold);"></span>Employee · Sarah K.</span>
+        </div>
+      </div>
+      <div class="mock-body">
+        <div class="mock-head">
+          <div class="mock-brand"><span class="dot-g">●</span> Watch Repair Shop</div>
+          <div class="mock-month">April 2026 · Updated 9:42 am</div>
+        </div>
+        <div class="kpi-row" style="grid-template-columns: repeat(3, 1fr);">
+          <div class="kpi green">
+            <div class="lbl">In progress</div>
+            <div class="val">7</div>
+            <div class="sub">2 ready for pickup today</div>
+          </div>
+          <div class="kpi">
+            <div class="lbl">Intake this week</div>
+            <div class="val">12</div>
+            <div class="sub">3 awaiting parts</div>
+          </div>
+          <div class="kpi">
+            <div class="lbl">Picked up</div>
+            <div class="val">9</div>
+            <div class="sub">Last 7 days</div>
+          </div>
+        </div>
+        <div class="panels">
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title">Active repairs</div>
+              <div class="panel-src">Shop floor</div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Omega Seamaster · D. Hayes<small>Crystal replaced · ready Apr 28</small></div>
+              <div class="rhs"><span class="pill green">Pickup</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Rolex Submariner · M. Chen<small>Awaiting parts · ETA May 3</small></div>
+              <div class="rhs"><span class="pill gold">Parts</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Tag Heuer Carrera · J. Park<small>Diagnosed · quote sent</small></div>
+              <div class="rhs"><span class="pill gray">Quote</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Cartier Tank · L. Ortiz<small>Battery + service · in progress</small></div>
+              <div class="rhs"><span class="pill gold">Active</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title">New intake</div>
+              <div class="panel-src">Mobile</div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">+ Start a new repair ticket<small>Photograph the watch · auto-fill the form</small></div>
+              <div class="rhs"><span class="pill green">Tap</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Recent: Breitling Navitimer · A. Rao<small>Logged 8:14 am · awaiting diagnosis</small></div>
+              <div class="rhs"><span class="pill gray">Logged</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Recent: Seiko Prospex · K. Liu<small>Logged Apr 26 · in progress</small></div>
+              <div class="rhs"><span class="pill gold">Active</span></div>
+            </div>
+            <div class="row-item">
+              <div class="lhs">Recent: Hamilton Khaki · R. Diaz<small>Logged Apr 25 · ready for pickup</small></div>
+              <div class="rhs"><span class="pill green">Pickup</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex; gap:14px; align-items:center; padding:12px 14px; background:#F1ECE0; border:1px dashed var(--rule); border-radius:10px;">
+          <span class="mono" style="font-size:11px; letter-spacing:0.12em; text-transform:uppercase; color:var(--ink-mute);">Hidden from this role</span>
+          <span style="flex:1; height:1px; background:var(--rule);"></span>
+          <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--ink-mute);">Rentals · Finances · Employee admin · Activity log</span>
+        </div>
+      </div>
+    </div>
+    <div class="footer" style="bottom: 32px;"><span>Full Bloom AI · concept mockup</span><span>07 / 15</span></div>
+  </div>
+</section>
+
+<!-- 8. REPAIR INTAKE -->
+<section data-label="08 Repair Intake">
+  <div class="slide" style="padding: 80px 100px;">
+    <p class="eyebrow">07 — Repair intake (mobile)</p>
+    <!-- renumbered -->
+    <h2 class="title-sm" style="margin-bottom: 32px;">Snap a photo. Log the repair. Done.</h2>
+
+    <div style="display: grid; grid-template-columns: 1fr 580px; gap: 80px; flex: 1; min-height: 0; align-items: start; padding-bottom: 60px;">
+      <!-- left: rationale -->
+      <div style="display:flex; flex-direction:column; gap: 28px;">
+        <p class="body" style="font-size: 28px; max-width: 760px;">A dedicated mobile page for new watch intake. Open it on your phone in the shop, photograph the watch from a few angles, jot the details, and the job appears on the dashboard the moment you save.</p>
+
+        <div class="item-list" style="margin-top: 4px;">
+          <div class="item" style="padding: 18px 0;">
+            <div class="num">01</div>
+            <div>
+              <h3 class="item-title" style="font-size:28px; margin-bottom: 4px;">Photograph + log on the work cell.</h3>
+              <p class="item-desc" style="font-size:22px;">Multiple shots per intake — face, caseback, condition. Stored on the customer record.</p>
+            </div>
+          </div>
+          <div class="item" style="padding: 18px 0;">
+            <div class="num">02</div>
+            <div>
+              <h3 class="item-title" style="font-size:28px; margin-bottom: 4px;">Print a repair envelope.</h3>
+              <p class="item-desc" style="font-size:22px;">Customer, watch, due date — printed to the envelope so the shop workflow doesn't change.</p>
+            </div>
+          </div>
+          <div class="item" style="padding: 18px 0;">
+            <div class="num">03</div>
+            <div>
+              <h3 class="item-title" style="font-size:28px; margin-bottom: 4px;">Customer record + SMS-ready.</h3>
+              <p class="item-desc" style="font-size:22px;">First intake creates the customer. Status changes can text "ready for pickup" straight to their cell.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- right: phone frame -->
+      <div style="justify-self: end; align-self: start;">
+        <div class="phone">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <div class="ph-statusbar">
+              <span>9:41</span>
+              <span class="ph-icons">
+                <svg width="18" height="10" viewBox="0 0 18 10" fill="currentColor"><rect x="0" y="6" width="3" height="4" rx="0.5"/><rect x="5" y="4" width="3" height="6" rx="0.5"/><rect x="10" y="2" width="3" height="8" rx="0.5"/><rect x="15" y="0" width="3" height="10" rx="0.5"/></svg>
+                <svg width="22" height="10" viewBox="0 0 22 10" fill="none" stroke="currentColor" stroke-width="1"><rect x="1" y="2" width="17" height="6" rx="1.5"/><rect x="2.5" y="3.5" width="14" height="3" fill="currentColor"/><rect x="19" y="4" width="1.5" height="2" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="ph-app-head">
+              <div class="ph-back">‹</div>
+              <div class="ph-title">New repair</div>
+              <div class="ph-save">Save</div>
+            </div>
+
+            <div class="ph-body">
+              <div class="ph-photo-row">
+                <div class="ph-photo">
+                  <div class="ph-photo-img" style="background: radial-gradient(circle at 50% 45%, #3a3530, #14110e 70%);">
+                    <div class="ph-watch"></div>
+                  </div>
+                </div>
+                <div class="ph-photo">
+                  <div class="ph-photo-img" style="background: linear-gradient(135deg, #2a2520, #0e0b08);">
+                    <div class="ph-watch ph-watch-side"></div>
+                  </div>
+                </div>
+                <button class="ph-photo-add" type="button">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                  <span>Add</span>
+                </button>
+              </div>
+
+              <div class="ph-field">
+                <label>Customer name</label>
+                <div class="ph-input">Daniel Hayes</div>
+              </div>
+              <div class="ph-field">
+                <label>Phone or email</label>
+                <div class="ph-input">d.hayes@gmail.com</div>
+              </div>
+              <div class="ph-field">
+                <label>Watch — make &amp; model</label>
+                <div class="ph-input">Omega Seamaster Professional 300m</div>
+              </div>
+              <div class="ph-field">
+                <label>Repair description</label>
+                <div class="ph-input ph-input-tall">Cracked sapphire crystal, replace and pressure test. Bezel insert loose — re-seat.</div>
+              </div>
+              <div class="ph-field-row">
+                <div class="ph-field">
+                  <label>Est. cost</label>
+                  <div class="ph-input">$385</div>
+                </div>
+                <div class="ph-field">
+                  <label>Due date</label>
+                  <div class="ph-input">Apr 28</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="ph-home"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer" style="bottom: 32px;"><span>Full Bloom AI · concept mockup</span><span>08 / 15</span></div>
+  </div>
+</section>
+
+<!-- 7. SYSTEM OF RECORD -->
+<section data-label="09 System of Record" class="bg-cream2">
+  <div class="slide">
+    <p class="eyebrow">08 — Compliance posture</p>
+    <h2 class="title-sm">TurboTenant and Square stay the systems of record.</h2>
+    <table class="tbl" style="margin-top: 24px;">
+      <thead>
+        <tr><th style="width:24%">Function</th><th style="width:28%">System of record</th><th>Dashboard's role</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="k">Rent collection</td><td>TurboTenant</td><td>Reads payment status. Never processes payments.</td></tr>
+        <tr><td class="k">Leases &amp; deposits</td><td>TurboTenant</td><td>Surfaces expirations and balances. Documents stay in TurboTenant.</td></tr>
+        <tr><td class="k">Sales &amp; invoices</td><td>Square</td><td>Reads orders, repair tickets, and customer info.</td></tr>
+        <tr><td class="k">Receipts &amp; expenses</td><td>SimplyWise</td><td>Reads tagged receipts. SimplyWise stays the archive.</td></tr>
+        <tr><td class="k">Outbound email</td><td>Google Workspace*</td><td>Sends scheduled and triggered emails from your address.</td></tr>
+      </tbody>
+    </table>
+    <p class="small mono" style="margin-top: 32px;">* If we move from iCloud — see slide 11</p>
+    <div class="footer"><span>Full Bloom AI</span><span>09 / 15</span></div>
+  </div>
+</section>
+
+<!-- 7. AUTOMATIONS -->
+<section data-label="10 Automations">
+  <div class="slide">
+    <p class="eyebrow">09 — What gets automated</p>
+    <h2 class="title-sm">Three automations in phase one.</h2>
+    <div class="item-list">
+      <div class="item">
+        <div class="num">A1</div>
+        <div>
+          <h3 class="item-title">Repair-ready SMS to the customer.</h3>
+          <p class="item-desc">When you mark a watch ready, a text goes to the customer's cell from your business number. No more voicemail tag, no more uncollected repairs.</p>
+        </div>
+      </div>
+      <div class="item">
+        <div class="num">A2</div>
+        <div>
+          <h3 class="item-title">Rent reminders on the 1st of each month.</h3>
+          <p class="item-desc">Pulled from TurboTenant. Sent from your business email. Worded as courtesy reminders, not legal notices.</p>
+        </div>
+      </div>
+      <div class="item">
+        <div class="num">A3</div>
+        <div>
+          <h3 class="item-title">Monday morning weekly summary, sent to you.</h3>
+          <p class="item-desc">What's late, what's ready for pickup, what came in last week, leases expiring in the next 60 days.</p>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span>Full Bloom AI</span><span>10 / 15</span></div>
+  </div>
+</section>
+
+<!-- 8. RECOMMENDATIONS -->
+<section data-label="11 Tool Recommendations">
+  <div class="slide">
+    <p class="eyebrow">10 — Tooling recommendations</p>
+    <h2 class="title-sm">Add Workspace. Hold on QuickBooks.</h2>
+    <div class="rec-grid">
+      <div class="rec-card">
+        <div class="rec-head">
+          <h3 class="rec-name">Google Workspace</h3>
+          <span class="rec-verdict yes">Recommend</span>
+        </div>
+        <p class="rec-why">Gives you a real business email address and clean credentials for the automated emails the dashboard sends. iCloud's automation story is fragile in comparison.</p>
+        <div class="rec-meta">
+          <span><b>~$6 / user / month</b></span>
+          <span>Migration: ~2 hrs</span>
+        </div>
+      </div>
+      <div class="rec-card">
+        <div class="rec-head">
+          <h3 class="rec-name">QuickBooks</h3>
+          <span class="rec-verdict no">Not yet</span>
+        </div>
+        <p class="rec-why">SimplyWise plus the dashboard's expense view will carry phase one. Revisit at year-end if your accountant pushes for it — the integration is straightforward to add later.</p>
+        <div class="rec-meta">
+          <span><b>Defer to phase two</b></span>
+          <span>Re-evaluate Q4</span>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span>Full Bloom AI</span><span>11 / 15</span></div>
+  </div>
+</section>
+
+<!-- 9. VIRGINIA COMPLIANCE -->
+<section data-label="12 Virginia Compliance" class="bg-cream2">
+  <div class="slide">
+    <p class="eyebrow">11 — Virginia compliance</p>
+    <h2 class="title-sm">Where state law touches the build.</h2>
+    <div class="comp-grid">
+      <div class="comp-k">VRLTA</div>
+      <div class="comp-v">Rent, deposits, late fees, notices live under the Virginia Residential Landlord &amp; Tenant Act.<small>Because TurboTenant is the system of record, they handle the compliance machinery — we don't take that liability on.</small></div>
+
+      <div class="comp-k">Notices</div>
+      <div class="comp-v">Dashboard reminders are courtesy only — never legal notices.<small>Formal notices (5-day pay-or-quit, lease termination) flow through TurboTenant or your attorney, exactly as today.</small></div>
+
+      <div class="comp-k">Payments</div>
+      <div class="comp-v">No payment processing in the dashboard. Ever.<small>Reading balance + status is fine; touching money would put us inside payment-processor and landlord regulations we'd rather avoid.</small></div>
+
+      <div class="comp-k">Data</div>
+      <div class="comp-v">Tenant and customer data stays inside the source platforms.<small>The dashboard caches what it needs to render the screen and nothing more — minimum data, encrypted at rest.</small></div>
+    </div>
+    <div class="footer"><span>Full Bloom AI</span><span>12 / 15</span></div>
+  </div>
+</section>
+
+<!-- 10. SCOPE -->
+<section data-label="13 Phase 1 Scope">
+  <div class="slide">
+    <p class="eyebrow">12 — Phase 1 scope</p>
+    <h2 class="title-sm">Tight on purpose.</h2>
+    <div class="scope-grid">
+      <div>
+        <h3 class="scope-h in">In scope</h3>
+        <div class="scope-list">
+          <div class="scope-item">Unified dashboard — web, single user<small>Hosted by Full Bloom AI · password-protected</small></div>
+          <div class="scope-item">Mobile repair intake + printable envelope<small>Photos, customer info, due date — from the work cell</small></div>
+          <div class="scope-item">Customer database (built from intake)<small>Name, phone, email, watch history, photos</small></div>
+          <div class="scope-item">Read-only API integrations<small>Square · TurboTenant · SimplyWise</small></div>
+          <div class="scope-item">Three automations<small>Repair-ready SMS · rent reminders · weekly summary</small></div>
+          <div class="scope-item">30 days of post-launch support</div>
+        </div>
+      </div>
+      <div>
+        <h3 class="scope-h out">Phase 2 candidates</h3>
+        <div class="scope-list">
+          <div class="scope-item muted">Parts &amp; inventory tracking<small>Movements, batteries, crystals, straps</small></div>
+          <div class="scope-item muted">Multi-channel sales rollup<small>Facebook · eBay · consignment income in one view</small></div>
+          <div class="scope-item muted">Airbnb income + property-level expenses<small>Per-property P&amp;L for your accountant at year-end</small></div>
+          <div class="scope-item muted">Vendor &amp; supplier directory<small>Plumbers, electricians, parts vendors</small></div>
+          <div class="scope-item muted">Shipping label workflow<small>Inbound/outbound watch shipments</small></div>
+          <div class="scope-item muted">QuickBooks · tenant portal · multi-user</div>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span>Full Bloom AI</span><span>13 / 15</span></div>
+  </div>
+</section>
+
+<!-- 11. TIMELINE & INVESTMENT -->
+<section data-label="14 Timeline & Investment" class="bg-cream2">
+  <div class="slide">
+    <p class="eyebrow">13 — Timeline &amp; investment</p>
+    <h2 class="title-sm">Six to eight weeks. Fixed fee plus hosting.</h2>
+
+    <div class="timeline" style="margin-bottom: 56px;">
+      <div class="tl-cell">
+        <div class="tl-num">M1 · Weeks 1–2</div>
+        <h4 class="tl-h">Discovery &amp; API access</h4>
+        <p class="tl-d">Confirm credentials, map data fields, lock visual direction, sign off on wireframes.</p>
+      </div>
+      <div class="tl-cell">
+        <div class="tl-num">M2 · Weeks 3–5</div>
+        <h4 class="tl-h">Build &amp; integrate</h4>
+        <p class="tl-d">Dashboard, three integrations, three email automations. Working preview by end of week 4.</p>
+      </div>
+      <div class="tl-cell">
+        <div class="tl-num">M3 · Weeks 6–8</div>
+        <h4 class="tl-h">Launch &amp; handoff</h4>
+        <p class="tl-d">Go live, walkthrough session, 30-day support window begins.</p>
+      </div>
+    </div>
+
+    <div class="invest-grid">
+      <div class="invest-cell">
+        <p class="invest-lbl">Phase 1 — fixed fee</p>
+        <p class="invest-num">$6.5–9k</p>
+        <p class="invest-sub">Build, integrations, automations, launch, 30 days of support. No hourly surprises.</p>
+      </div>
+      <div class="invest-cell">
+        <p class="invest-lbl">Hosting &amp; care</p>
+        <p class="invest-num">$150 / mo</p>
+        <p class="invest-sub">Hosting, monitoring, minor tweaks, monthly check-in. Cancel anytime after month three.</p>
+      </div>
+    </div>
+    <div class="footer"><span>Full Bloom AI</span><span>14 / 15</span></div>
+  </div>
+</section>
+
+<!-- 12. NEXT STEPS -->
+<section data-label="15 Next Steps" class="bg-deep">
+  <div class="slide">
+    <p class="eyebrow">14 — Next steps</p>
+    <h2 class="title-sm">If this looks right, here's how we start.</h2>
+
+    <div class="next-list">
+      <div class="next-row">
+        <div class="next-step">01</div>
+        <div class="next-h">Written scope &amp; proposal in your inbox.</div>
+        <div class="next-when">This week</div>
+      </div>
+      <div class="next-row">
+        <div class="next-step">02</div>
+        <div class="next-h">Sign &amp; share API credentials.</div>
+        <div class="next-when">Within 7 days</div>
+      </div>
+      <div class="next-row">
+        <div class="next-step">03</div>
+        <div class="next-h">First working preview of the dashboard.</div>
+        <div class="next-when">~Week 3</div>
+      </div>
+      <div class="next-row">
+        <div class="next-step">04</div>
+        <div class="next-h">Launch and start of 30-day support.</div>
+        <div class="next-when">~Week 7</div>
+      </div>
+    </div>
+
+    <p class="pull" style="margin-top: 64px; max-width: 1400px;">Questions before we wrap?</p>
+
+    <div class="footer">
+      <span>fullbloom.ai · hello@fullbloom.ai</span>
+      <span>15 / 15</span>
+    </div>
+  </div>
+</section>
+
+</deck-stage>
+</body>
+</html>

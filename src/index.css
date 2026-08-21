@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --cream: #f5f1ea;
+    --cream-2: #ebe5d9;
+    --ink: #1a2420;
+    --ink-soft: #3a4a42;
+    --ink-mute: #6b7972;
+    --green: #2d5a4a;
+    --green-deep: #1f3f34;
+    --gold: #b8924a;
+    --rule: #d9d2c2;
+    --rule-soft: #e5dfd0;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--cream);
+    color: var(--ink);
+    font-family: 'Geist', -apple-system, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer components {
+  /* ── Status pills ─────────────────────────────────────────── */
+  .pill {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] whitespace-nowrap;
+  }
+  .pill-green {
+    background: #e1ecdf;
+    color: var(--green-deep);
+  }
+  .pill-gold {
+    background: #f2e8d1;
+    color: #7a5f22;
+  }
+  .pill-red {
+    background: #f2dcd6;
+    color: #8a3d26;
+  }
+  .pill-gray {
+    background: #ece7da;
+    color: var(--ink-mute);
+  }
+
+  /* ── Mono label (uppercase, tracked) ──────────────────────── */
+  .label-mono {
+    @apply font-mono text-[11px] uppercase tracking-[0.1em] text-ink-mute;
+  }
+
+  /* ── Card ─────────────────────────────────────────────────── */
+  .card {
+    @apply rounded-[10px] border border-rule bg-white;
+  }
+
+  /* Subtle focus ring consistent with palette */
+  .focus-ring {
+    @apply outline-none ring-2 ring-green/30 ring-offset-1 ring-offset-cream;
+  }
+}
+
+/* Thin, unobtrusive scrollbars for scrollable panels */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--rule);
+  border-radius: 999px;
+}
