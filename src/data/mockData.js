@@ -7,8 +7,13 @@
 // prototype built from the pitch-deck design handoff.
 // ─────────────────────────────────────────────────────────────────────────
 
-// The "as of" month the mocked data represents.
-export const PERIOD_LABEL = 'April 2026'
+// The "as of" month shown in the header — computed live from the current date
+// (e.g. "August 2026"), so it always reflects today rather than a fixed month.
+// In the real product this is the reporting period the live figures cover.
+export const PERIOD_LABEL = new Date().toLocaleDateString('en-US', {
+  month: 'long',
+  year: 'numeric',
+})
 
 // Per-source sync state. The real dashboard polls each API independently and
 // degrades gracefully (shows stale data + last-synced instead of erroring).
