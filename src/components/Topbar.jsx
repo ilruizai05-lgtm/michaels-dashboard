@@ -15,8 +15,8 @@ export default function Topbar({ onMenu }) {
     if (!term) return []
     const out = []
     for (const r of state.repairs) {
-      if (`${r.watch} ${r.customer}`.toLowerCase().includes(term))
-        out.push({ id: r.id, label: `${r.watch} · ${r.customer}`, kind: 'Repair', route: 'watches' })
+      if (`${r.ticket} ${r.watch} ${r.customer}`.toLowerCase().includes(term))
+        out.push({ id: r.id, label: `${r.ticket} · ${r.watch} · ${r.customer}`, kind: 'Repair', route: 'watches' })
     }
     for (const c of customers) {
       if (`${c.name} ${c.contact}`.toLowerCase().includes(term))

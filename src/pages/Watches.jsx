@@ -4,10 +4,10 @@ import Pill from '../components/Pill.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import Icon from '../components/Icons.jsx'
 
-const STATUSES = ['Logged', 'Quote', 'Active', 'Parts', 'Pickup']
+const STATUSES = ['Received', 'In progress', 'Waiting on parts', 'Contact for pickup', 'Completed']
 
 // Watch repairs list (Square + intake). Statuses are editable; moving a ticket
-// to "Pickup" fires the repair-ready SMS automation (see the toast + log).
+// to "Contact for pickup" fires the repair-ready SMS automation (toast + log).
 export default function Watches() {
   const { state, actions } = useApp()
   const [filter, setFilter] = useState('all')
@@ -27,7 +27,7 @@ export default function Watches() {
       <PageHeader
         eyebrow="Watch shop · Square"
         title="Watch repairs"
-        sub="Every ticket on the bench. Change a status inline — “Ready for pickup” texts the customer."
+        sub="Every ticket on the bench. Change a status inline — “Contact for pickup” texts the customer."
         right={
           <button
             type="button"
@@ -53,8 +53,8 @@ export default function Watches() {
 
       <div className="card overflow-hidden">
         {/* Header row (desktop) */}
-        <div className="hidden grid-cols-[1.6fr_1fr_0.7fr_0.7fr_auto] gap-4 border-b border-rule bg-surface px-4 py-3 sm:grid">
-          {['Watch & customer', 'Status detail', 'Est. cost', 'Due', 'Status'].map((h) => (
+        <div className="hidden grid-cols-[0.6fr_1.6fr_1fr_0.5fr_auto] gap-4 border-b border-rule bg-surface px-4 py-3 sm:grid">
+          {['Ticket', 'Watch & customer', 'Status detail', 'Est. cost', 'Status'].map((h) => (
             <span key={h} className="label-mono">
               {h}
             </span>
@@ -65,15 +65,15 @@ export default function Watches() {
           {rows.map((r) => (
             <li
               key={r.id}
-              className="grid grid-cols-1 gap-2 border-b border-rule-soft px-4 py-3 last:border-b-0 sm:grid-cols-[1.6fr_1fr_0.7fr_0.7fr_auto] sm:items-center sm:gap-4"
+              className="grid grid-cols-1 gap-2 border-b border-rule-soft px-4 py-3 last:border-b-0 sm:grid-cols-[0.6fr_1.6fr_1fr_0.5fr_auto] sm:items-center sm:gap-4"
             >
+              <div className="font-mono text-[13px] text-ink-soft">{r.ticket}</div>
               <div>
                 <div className="font-serif text-[17px] text-ink">{r.watch}</div>
                 <div className="text-[13px] text-ink-mute">{r.customer}</div>
               </div>
               <div className="text-sm text-ink-soft">{r.detail}</div>
               <div className="font-mono text-[13px] text-ink-soft">{r.cost}</div>
-              <div className="font-mono text-[13px] text-ink-soft">{r.due}</div>
               <div className="flex items-center gap-2">
                 <Pill tone={r.pill}>{r.status}</Pill>
                 <StatusMenu current={r.status} onPick={(s) => actions.setRepairStatus(r.id, s)} />
@@ -114,7 +114,7 @@ function StatusMenu({ current, onPick }) {
         <Icon name="chevron" size={14} className="rotate-90" />
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 w-36 overflow-hidden rounded-lg border border-rule bg-white shadow-card">
+        <div className="absolute right-0 top-full z-20 mt-1 w-52 overflow-hidden rounded-lg border border-rule bg-white shadow-card">
           {STATUSES.map((s) => (
             <button
               key={s}

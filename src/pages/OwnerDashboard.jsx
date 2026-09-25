@@ -12,7 +12,7 @@ export default function OwnerDashboard() {
   const { state, actions } = useApp()
 
   const rentalItems = rentals.filter((r) => r.needsAttention)
-  const watchItems = state.repairs.filter((r) => ['Pickup', 'Parts', 'Quote', 'Active'].includes(r.status)).slice(0, 5)
+  const watchItems = state.repairs.filter((r) => r.status !== 'Completed').slice(0, 5)
   const recent = state.activity.slice(0, 5)
 
   return (

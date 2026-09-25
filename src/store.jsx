@@ -49,13 +49,13 @@ function reducer(state, action) {
       const r = action.repair
       const repair = {
         id: nextId('w'),
+        ticket: r.ticket || `WR-${1044 + Math.floor(Math.random() * 900)}`,
         watch: r.watch || 'Untitled watch',
         customer: r.customer || 'New customer',
-        detail: `Logged just now · ${r.description ? 'awaiting diagnosis' : 'intake'}`,
-        status: 'Logged',
+        detail: 'Logged just now · awaiting diagnosis',
+        status: 'Received',
         pill: 'gray',
         cost: r.cost || '—',
-        due: r.due || 'TBD',
       }
       return {
         ...state,
@@ -80,11 +80,11 @@ function reducer(state, action) {
 
     case 'SET_REPAIR_STATUS': {
       const map = {
-        Pickup: { pill: 'green', detail: 'Ready for pickup' },
-        Parts: { pill: 'gold', detail: 'Awaiting parts' },
-        Active: { pill: 'gold', detail: 'In progress' },
-        Quote: { pill: 'gray', detail: 'Quote sent' },
-        Logged: { pill: 'gray', detail: 'Awaiting diagnosis' },
+        Received: { pill: 'gray', detail: 'Received · awaiting diagnosis' },
+        'In progress': { pill: 'gold', detail: 'In progress on the bench' },
+        'Waiting on parts': { pill: 'gold', detail: 'Waiting on parts on order' },
+        'Contact for pickup': { pill: 'green', detail: 'Ready — contact customer for pickup' },
+        Completed: { pill: 'gray', detail: 'Completed · picked up' },
       }
       const meta = map[action.status] || { pill: 'gray', detail: action.status }
       let changed
@@ -104,8 +104,8 @@ function reducer(state, action) {
         },
         ...state.activity,
       ]
-      // Ready-for-pickup fires the Twilio SMS automation.
-      if (action.status === 'Pickup') {
+      // "Contact for pickup" fires the Twilio SMS automation.
+      if (action.status === 'Contact for pickup') {
         activity.unshift({
           id: nextId('a'),
           who: 'System',
@@ -119,8 +119,8 @@ function reducer(state, action) {
         repairs,
         activity,
         toast:
-          action.status === 'Pickup'
-            ? { title: 'Marked ready', body: `Repair-ready SMS sent to ${changed.customer}.` }
+          action.status === 'Contact for pickup'
+            ? { title: 'Customer notified', body: `Repair-ready SMS sent to ${changed.customer}.` }
             : null,
       }
     }

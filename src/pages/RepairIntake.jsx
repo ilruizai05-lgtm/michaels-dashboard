@@ -17,13 +17,14 @@ const PHOTO_BGS = [
 export default function RepairIntake() {
   const { actions } = useApp()
   const [photos, setPhotos] = useState([PHOTO_BGS[0], PHOTO_BGS[1]])
+  // A ticket number is assigned automatically the moment intake opens.
+  const [ticket] = useState(() => `WR-${1044 + Math.floor(Math.random() * 900)}`)
   const [form, setForm] = useState({
     customer: '',
     contact: '',
     watch: '',
     description: '',
     cost: '',
-    due: '',
   })
   const [error, setError] = useState('')
 
@@ -38,7 +39,7 @@ export default function RepairIntake() {
       setError('Add at least a customer name and the watch make & model.')
       return
     }
-    actions.addRepair(form) // navigates to Watches + fires toast + logs activity
+    actions.addRepair({ ...form, ticket }) // navigates to Watches + toast + logs activity
   }
 
   return (
@@ -57,10 +58,10 @@ export default function RepairIntake() {
               Multiple shots per intake — face, caseback, condition. Stored on the customer record.
             </Step>
             <Step n="02" title="Print a repair envelope" icon="print">
-              Customer, watch and due date print to the envelope, so the shop's paper workflow doesn't change.
+              Customer, watch and ticket number print to the envelope, so the shop's paper workflow doesn't change.
             </Step>
             <Step n="03" title="Customer record + SMS-ready" icon="bell">
-              First intake creates the customer. A status change to “ready” texts the customer from the business number.
+              First intake creates the customer. Setting the status to “Contact for pickup” texts the customer from the business number.
             </Step>
           </ol>
 
@@ -132,8 +133,16 @@ export default function RepairIntake() {
                 <PhField label="Customer name">
                   <input value={form.customer} onChange={set('customer')} placeholder="Daniel Hayes" className={inputCls} />
                 </PhField>
-                <PhField label="Phone or email">
-                  <input value={form.contact} onChange={set('contact')} placeholder="d.hayes@gmail.com" className={inputCls} />
+                <PhField label="Ticket number">
+                  <div className="flex items-center justify-between rounded-lg border border-rule bg-cream px-3 py-2">
+                    <span className="font-mono text-sm text-ink">{ticket}</span>
+                    <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-ink-mute">
+                      Auto-assigned
+                    </span>
+                  </div>
+                </PhField>
+                <PhField label="Phone number">
+                  <input value={form.contact} onChange={set('contact')} placeholder="(804) 555-0148" className={inputCls} />
                 </PhField>
                 <PhField label="Watch — make & model">
                   <input value={form.watch} onChange={set('watch')} placeholder="Omega Seamaster Professional" className={inputCls} />
@@ -147,14 +156,9 @@ export default function RepairIntake() {
                     className={`${inputCls} resize-none`}
                   />
                 </PhField>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <PhField label="Est. cost">
-                    <input value={form.cost} onChange={set('cost')} placeholder="$385" className={inputCls} />
-                  </PhField>
-                  <PhField label="Due date">
-                    <input value={form.due} onChange={set('due')} placeholder="Apr 28" className={inputCls} />
-                  </PhField>
-                </div>
+                <PhField label="Est. cost">
+                  <input value={form.cost} onChange={set('cost')} placeholder="$385" className={inputCls} />
+                </PhField>
 
                 {error && <p className="text-[13px] text-[#8a3d26]">{error}</p>}
 
