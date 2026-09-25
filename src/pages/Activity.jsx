@@ -3,15 +3,12 @@ import { useApp } from '../store.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import Icon from '../components/Icons.jsx'
 
-// Activity log (owner only). Scope/format is still an open question with
-// Michael per the handoff — this is a simple filterable table as a starting
-// point, not a committed final feature set.
+// Activity log. A simple filterable table of what happened and when.
 const KINDS = {
   auth: { label: 'Sign-in', icon: 'lock', tone: 'gray' },
   intake: { label: 'Intake', icon: 'plus', tone: 'green' },
   status: { label: 'Status', icon: 'watch', tone: 'gold' },
   automation: { label: 'Automation', icon: 'bell', tone: 'green' },
-  admin: { label: 'Admin', icon: 'badge', tone: 'gold' },
   sync: { label: 'Sync', icon: 'clock', tone: 'gray' },
 }
 

@@ -1,30 +1,24 @@
 import { createContext, useContext, useMemo, useReducer } from 'react'
-import {
-  initialRepairs,
-  initialEmployees,
-  initialActivity,
-} from './data/mockData.js'
+import { initialRepairs, initialActivity } from './data/mockData.js'
 
 // ─────────────────────────────────────────────────────────────────────────
-// App store — auth + a tiny domain store so the prototype feels live:
-// logging a repair on the intake screen actually adds a ticket that shows up
-// on the dashboard, writes an activity-log entry, etc.
+// App store — a tiny domain store so the prototype feels live: logging a
+// repair on the intake screen actually adds a ticket that shows up on the
+// dashboard, writes an activity-log entry, etc.
+//
+// Single-user: Michael (the owner) is the only account. There is no employee
+// role — he is the only one who accesses the dashboard.
 // ─────────────────────────────────────────────────────────────────────────
 
 const AppContext = createContext(null)
 
-// The two demo accounts. In the real product these come from an auth provider;
-// here we just let you pick a role to explore each experience.
-export const accounts = {
-  owner: { role: 'owner', name: 'Michael', label: 'Owner', initials: 'M' },
-  employee: { role: 'employee', name: 'Sarah K.', label: 'Employee', initials: 'SK' },
-}
+// The single account. In the real product this comes from an auth provider.
+export const account = { name: 'Michael', label: 'Owner', initials: 'M' }
 
 const initialState = {
-  user: null, // null = logged out
+  user: null, // null = logged out (shows the sign-in screen)
   route: 'dashboard',
   repairs: initialRepairs,
-  employees: initialEmployees,
   activity: initialActivity,
   toast: null,
 }
@@ -34,18 +28,16 @@ const nextId = (prefix) => `${prefix}${++seq}`
 
 function reducer(state, action) {
   switch (action.type) {
-    case 'LOGIN': {
-      const user = accounts[action.role]
+    case 'LOGIN':
       return {
         ...state,
-        user,
+        user: account,
         route: 'dashboard',
         activity: [
-          { id: nextId('a'), who: user.name, what: 'Signed in', when: 'Just now', kind: 'auth' },
+          { id: nextId('a'), who: account.name, what: 'Signed in', when: 'Just now', kind: 'auth' },
           ...state.activity,
         ],
       }
-    }
 
     case 'LOGOUT':
       return { ...state, user: null, route: 'dashboard' }
@@ -76,7 +68,7 @@ function reducer(state, action) {
         activity: [
           {
             id: nextId('a'),
-            who: state.user?.name || 'Someone',
+            who: state.user?.name || 'Michael',
             what: `Logged new intake · ${repair.watch} · ${repair.customer}`,
             when: 'Just now',
             kind: 'intake',
@@ -105,7 +97,7 @@ function reducer(state, action) {
       const activity = [
         {
           id: nextId('a'),
-          who: state.user?.name || 'Someone',
+          who: state.user?.name || 'Michael',
           what: `Updated ${changed.watch} · ${changed.customer} to "${action.status}"`,
           when: 'Just now',
           kind: 'status',
@@ -133,53 +125,6 @@ function reducer(state, action) {
       }
     }
 
-    case 'ADD_EMPLOYEE': {
-      const emp = {
-        id: nextId('e'),
-        name: action.employee.name,
-        email: action.employee.email,
-        role: 'Employee',
-        status: 'Active',
-        added: 'Just now',
-      }
-      return {
-        ...state,
-        employees: [...state.employees, emp],
-        toast: { title: 'Employee added', body: `${emp.name} can now sign in to the watch shop.` },
-        activity: [
-          {
-            id: nextId('a'),
-            who: state.user?.name || 'Owner',
-            what: `Added employee account · ${emp.name}`,
-            when: 'Just now',
-            kind: 'admin',
-          },
-          ...state.activity,
-        ],
-      }
-    }
-
-    case 'REMOVE_EMPLOYEE': {
-      const emp = state.employees.find((e) => e.id === action.id)
-      return {
-        ...state,
-        employees: state.employees.filter((e) => e.id !== action.id),
-        toast: emp ? { title: 'Employee removed', body: `${emp.name}'s access was revoked.` } : state.toast,
-        activity: emp
-          ? [
-              {
-                id: nextId('a'),
-                who: state.user?.name || 'Owner',
-                what: `Removed employee account · ${emp.name}`,
-                when: 'Just now',
-                kind: 'admin',
-              },
-              ...state.activity,
-            ]
-          : state.activity,
-      }
-    }
-
     case 'CLEAR_TOAST':
       return { ...state, toast: null }
 
@@ -193,13 +138,11 @@ export function AppProvider({ children }) {
 
   const value = useMemo(() => {
     const actions = {
-      login: (role) => dispatch({ type: 'LOGIN', role }),
+      login: () => dispatch({ type: 'LOGIN' }),
       logout: () => dispatch({ type: 'LOGOUT' }),
       navigate: (route) => dispatch({ type: 'NAVIGATE', route }),
       addRepair: (repair) => dispatch({ type: 'ADD_REPAIR', repair }),
       setRepairStatus: (id, status) => dispatch({ type: 'SET_REPAIR_STATUS', id, status }),
-      addEmployee: (employee) => dispatch({ type: 'ADD_EMPLOYEE', employee }),
-      removeEmployee: (id) => dispatch({ type: 'REMOVE_EMPLOYEE', id }),
       clearToast: () => dispatch({ type: 'CLEAR_TOAST' }),
     }
     return { state, actions }

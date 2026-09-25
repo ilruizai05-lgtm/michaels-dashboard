@@ -1,12 +1,10 @@
-import { useState } from 'react'
 import { useApp } from '../store.jsx'
 import Icon from './Icons.jsx'
 
-// Role picker standing in for real auth. Owner sees both businesses; Employee
-// sees the watch shop only. Choosing a role signs you in as that account.
+// Sign-in screen. Single-user: Michael is the only account, so this is a
+// simple welcome/entry rather than a role picker.
 export default function Login() {
   const { actions } = useApp()
-  const [hover, setHover] = useState('owner')
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
@@ -58,70 +56,47 @@ export default function Login() {
           </div>
 
           <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-ink-mute">
-            Sign in
+            Welcome back
           </p>
           <h2 className="mt-2 font-serif text-4xl leading-tight text-ink">
-            Choose how you're signing in.
+            Sign in to your dashboard.
           </h2>
           <p className="mt-3 text-ink-soft">
-            This prototype has two demo accounts so you can explore each experience.
+            Your watch shop and rentals, both in one place.
           </p>
 
-          <div className="mt-8 space-y-3">
-            <RoleButton
-              role="owner"
-              name="Michael"
-              blurb="Owner — full access. Watches, rentals, finances, employees & activity log."
-              tone="gold"
-              active={hover === 'owner'}
-              onHover={() => setHover('owner')}
-              onClick={() => actions.login('owner')}
-            />
-            <RoleButton
-              role="employee"
-              name="Sarah K."
-              blurb="Employee — watch shop only. No rentals, finances or admin, anywhere."
-              tone="green"
-              active={hover === 'employee'}
-              onHover={() => setHover('employee')}
-              onClick={() => actions.login('employee')}
-            />
+          <div className="mt-8">
+            <button
+              type="button"
+              onClick={() => actions.login()}
+              className="group flex w-full items-center gap-4 rounded-card border border-rule bg-surface p-4 text-left transition hover:border-green/50 hover:shadow-card focus-visible:focus-ring"
+            >
+              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-gold font-mono text-xs font-medium uppercase text-white">
+                M
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="font-serif text-xl text-ink">Michael</span>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-mute">
+                    · Owner
+                  </span>
+                </span>
+                <span className="mt-0.5 block text-[13px] leading-snug text-ink-soft">
+                  Enter the dashboard — watches, rentals, finances &amp; activity.
+                </span>
+              </span>
+              <Icon
+                name="chevron"
+                className="shrink-0 text-ink-mute transition group-hover:translate-x-0.5 group-hover:text-green"
+              />
+            </button>
           </div>
 
           <p className="mt-8 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-mute">
-            Prototype · sample data · no real accounts or integrations
+            Prototype · sample data · no real integrations
           </p>
         </div>
       </div>
     </div>
-  )
-}
-
-function RoleButton({ role, name, blurb, tone, active, onHover, onClick }) {
-  const dot = tone === 'gold' ? 'bg-gold' : 'bg-green'
-  return (
-    <button
-      type="button"
-      onMouseEnter={onHover}
-      onFocus={onHover}
-      onClick={onClick}
-      className={`group flex w-full items-center gap-4 rounded-card border bg-surface p-4 text-left transition focus-visible:focus-ring ${
-        active ? 'border-green/60 shadow-card' : 'border-rule hover:border-green/40'
-      }`}
-    >
-      <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-full ${dot} font-mono text-xs font-medium uppercase text-white`}>
-        {role === 'owner' ? 'M' : 'SK'}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          <span className="font-serif text-xl text-ink">{name}</span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-mute">
-            · {role}
-          </span>
-        </span>
-        <span className="mt-0.5 block text-[13px] leading-snug text-ink-soft">{blurb}</span>
-      </span>
-      <Icon name="chevron" className="shrink-0 text-ink-mute transition group-hover:translate-x-0.5 group-hover:text-green" />
-    </button>
   )
 }

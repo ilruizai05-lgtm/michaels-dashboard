@@ -1,34 +1,24 @@
 import { useState } from 'react'
 import { AppProvider, useApp } from './store.jsx'
-import { navItems } from './data/nav.js'
 import Login from './components/Login.jsx'
 import Sidebar from './components/Sidebar.jsx'
 import Topbar from './components/Topbar.jsx'
 import Toast from './components/Toast.jsx'
 
 import OwnerDashboard from './pages/OwnerDashboard.jsx'
-import EmployeeDashboard from './pages/EmployeeDashboard.jsx'
 import Watches from './pages/Watches.jsx'
 import Rentals from './pages/Rentals.jsx'
 import Customers from './pages/Customers.jsx'
 import Finances from './pages/Finances.jsx'
-import Employees from './pages/Employees.jsx'
 import Activity from './pages/Activity.jsx'
 import RepairIntake from './pages/RepairIntake.jsx'
 
 function Router() {
   const { state } = useApp()
-  const role = state.user.role
-  const route = state.route
 
-  // Guard: an employee can never land on an owner-only route.
-  const allowed = navItems.find((n) => n.key === route)
-  const permitted = allowed ? allowed.roles.includes(role) : true
-  const safeRoute = permitted ? route : 'dashboard'
-
-  switch (safeRoute) {
+  switch (state.route) {
     case 'dashboard':
-      return role === 'owner' ? <OwnerDashboard /> : <EmployeeDashboard />
+      return <OwnerDashboard />
     case 'watches':
       return <Watches />
     case 'intake':
@@ -39,12 +29,10 @@ function Router() {
       return <Rentals />
     case 'finances':
       return <Finances />
-    case 'employees':
-      return <Employees />
     case 'activity':
       return <Activity />
     default:
-      return role === 'owner' ? <OwnerDashboard /> : <EmployeeDashboard />
+      return <OwnerDashboard />
   }
 }
 

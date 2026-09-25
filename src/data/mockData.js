@@ -60,32 +60,6 @@ export const ownerKpis = [
   },
 ]
 
-// ── Employee KPI strip (watch shop only) ───────────────────────────────────
-export const employeeKpis = [
-  {
-    id: 'inprogress',
-    label: 'In progress',
-    value: '7',
-    sub: '2 ready for pickup today',
-    accent: true,
-    link: 'watches',
-  },
-  {
-    id: 'intake',
-    label: 'Intake this week',
-    value: '12',
-    sub: '3 awaiting parts',
-    link: 'watches',
-  },
-  {
-    id: 'pickedup',
-    label: 'Picked up',
-    value: '9',
-    sub: 'Last 7 days',
-    link: 'watches',
-  },
-]
-
 // ── Rentals (TurboTenant) ──────────────────────────────────────────────────
 // status pill: red=late, gold=renewal, gray=open, green=paid
 export const rentals = [
@@ -236,20 +210,14 @@ export const customers = [
   { id: 'c6', name: 'Kevin Liu', contact: '(804) 555-0199', watches: 2, lastVisit: 'Apr 26' },
 ]
 
-// ── Employee accounts (owner-managed) ──────────────────────────────────────
-export const initialEmployees = [
-  { id: 'e1', name: 'Sarah Kim', email: 's.kim@michaels.shop', role: 'Employee', status: 'Active', added: 'Mar 2026' },
-  { id: 'e2', name: 'Tom Alvarez', email: 't.alvarez@michaels.shop', role: 'Employee', status: 'Active', added: 'Apr 2026' },
-]
-
-// ── Activity log (owner only) ──────────────────────────────────────────────
+// ── Activity log ───────────────────────────────────────────────────────────
 export const initialActivity = [
-  { id: 'a1', who: 'Sarah K.', what: 'Marked Hamilton Khaki · R. Diaz "Ready for pickup"', when: '9:20 am', kind: 'status' },
+  { id: 'a1', who: 'Michael', what: 'Marked Hamilton Khaki · R. Diaz "Ready for pickup"', when: '9:20 am', kind: 'status' },
   { id: 'a2', who: 'System', what: 'Sent repair-ready SMS to R. Diaz', when: '9:20 am', kind: 'automation' },
-  { id: 'a3', who: 'Sarah K.', what: 'Logged new intake · Breitling Navitimer · A. Rao', when: '8:14 am', kind: 'intake' },
+  { id: 'a3', who: 'Michael', what: 'Logged new intake · Breitling Navitimer · A. Rao', when: '8:14 am', kind: 'intake' },
   { id: 'a4', who: 'Michael', what: 'Signed in', when: '8:02 am', kind: 'auth' },
   { id: 'a5', who: 'System', what: 'Synced TurboTenant · 6 properties', when: '9:41 am', kind: 'sync' },
-  { id: 'a6', who: 'Tom A.', what: 'Updated Cartier Tank · L. Ortiz to "In progress"', when: 'Apr 26 · 4:36 pm', kind: 'status' },
+  { id: 'a6', who: 'Michael', what: 'Updated Cartier Tank · L. Ortiz to "In progress"', when: 'Apr 26 · 4:36 pm', kind: 'status' },
 ]
 
 // ── Finances snapshot (owner only) ─────────────────────────────────────────

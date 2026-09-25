@@ -4,7 +4,7 @@
 
 A clickable **prototype** of a unified, read-only business dashboard for
 Michael's two businesses — a **watch repair shop** and **rental properties** —
-with role-based access (**Owner** vs **Employee**).
+in one place. Single-user: Michael is the only account.
 
 Built from the design handoff in `Client Portal Pitch.html` (the pitch deck),
 recreating its visual language (Fraunces / Geist type, cream + green + gold
@@ -17,35 +17,19 @@ markup.
 
 ## What's in it
 
-- **Login / role picker** — sign in as **Michael (Owner)** or **Sarah K.
-  (Employee)** to explore each experience.
-- **Owner dashboard** — KPI strip across both businesses (with trend deltas),
-  two "needs attention" panels (Rentals · TurboTenant / Watches · Square) with
+- **Sign-in** — a simple welcome screen that opens the dashboard.
+- **Dashboard** — KPI strip across both businesses (with trend deltas), two
+  "needs attention" panels (Rentals · TurboTenant / Watches · Square) with
   per-source _last synced_ times and "View all" links, plus a recent-activity
   rail.
-- **Employee dashboard** — same chrome, scoped to the shop floor (3 KPIs,
-  active repairs, new intake). Rentals / finances / admin / activity log are
-  **absent from navigation** — shown only as a locked "Owner only" group so the
-  boundary reads as real product chrome.
 - **Mobile repair intake** — iOS-style phone flow: photo row → form → save.
   Saving adds the ticket (it shows on the dashboard immediately), "prints" an
   envelope, and creates the customer.
 - **Watch repairs** — full list with inline status changes; moving a ticket to
   **Ready for pickup** fires the (simulated) repair-ready SMS and logs it.
 - **Rentals**, **Customers**, **Finances** (income/expense + automations),
-  **Employees** (owner adds/removes accounts), **Activity log** (filterable).
-- **Global search** in the header, scoped by role (employees can't surface
-  tenants or properties).
-
-## Role model
-
-| Area | Owner | Employee |
-| --- | :---: | :---: |
-| Watch repairs, intake, customers | ✅ | ✅ |
-| Rentals, finances, employee admin, activity log | ✅ | ⛔ (absent from nav) |
-
-Route access is guarded in `src/App.jsx` — an employee can't reach an
-owner-only route even by other means, not just by hiding the link.
+  **Activity log** (filterable).
+- **Global search** in the header across watches, customers and properties.
 
 ## Run it
 
@@ -61,14 +45,14 @@ npm run preview  # preview the production build
 
 ```
 src/
-  App.jsx              # shell + role-gated router
-  store.jsx            # auth + tiny domain store (useReducer + context)
+  App.jsx              # shell + router
+  store.jsx            # tiny domain store (useReducer + context)
   data/
     mockData.js        # sample KPIs, rentals, repairs, customers, etc.
-    nav.js             # role-gated navigation config
+    nav.js             # navigation config
   components/          # Login, Sidebar, Topbar, KpiCard, Panel, Pill, Toast…
-  pages/               # OwnerDashboard, EmployeeDashboard, Watches, Rentals,
-                       # Customers, Finances, Employees, Activity, RepairIntake
+  pages/               # OwnerDashboard, Watches, Rentals,
+                       # Customers, Finances, Activity, RepairIntake
 ```
 
 ## Design tokens

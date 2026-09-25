@@ -3,11 +3,10 @@ import { useApp } from '../store.jsx'
 import { sources, rentals, customers } from '../data/mockData.js'
 import Icon from './Icons.jsx'
 
-// Global search + quick-add + per-source last-synced. Search scope respects
-// role: employees can't surface tenants/properties.
+// Global search across watches, customers and properties + quick-add repair
+// ticket + per-source last-synced. Single-user, so search spans everything.
 export default function Topbar({ onMenu }) {
   const { state, actions } = useApp()
-  const role = state.user.role
   const [q, setQ] = useState('')
   const [focused, setFocused] = useState(false)
 
@@ -23,16 +22,12 @@ export default function Topbar({ onMenu }) {
       if (`${c.name} ${c.contact}`.toLowerCase().includes(term))
         out.push({ id: c.id, label: c.name, kind: 'Customer', route: 'customers' })
     }
-    if (role === 'owner') {
-      for (const r of rentals) {
-        if (`${r.property} ${r.tenant}`.toLowerCase().includes(term))
-          out.push({ id: r.id, label: `${r.property} · ${r.tenant}`, kind: 'Rental', route: 'rentals' })
-      }
+    for (const r of rentals) {
+      if (`${r.property} ${r.tenant}`.toLowerCase().includes(term))
+        out.push({ id: r.id, label: `${r.property} · ${r.tenant}`, kind: 'Rental', route: 'rentals' })
     }
     return out.slice(0, 6)
-  }, [q, state.repairs, role])
-
-  const visibleSources = role === 'owner' ? sources : sources.filter((s) => s.key === 'square')
+  }, [q, state.repairs])
 
   return (
     <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-rule bg-cream/90 px-4 py-3 backdrop-blur sm:px-6">
@@ -54,7 +49,7 @@ export default function Topbar({ onMenu }) {
             onChange={(e) => setQ(e.target.value)}
             onFocus={() => setFocused(true)}
             onBlur={() => setTimeout(() => setFocused(false), 150)}
-            placeholder={role === 'owner' ? 'Search watches, customers, properties…' : 'Search watches & customers…'}
+            placeholder="Search watches, customers, properties…"
             className="w-full bg-transparent text-sm text-ink placeholder:text-ink-mute focus:outline-none"
           />
           <kbd className="hidden shrink-0 rounded border border-rule bg-cream px-1.5 py-0.5 font-mono text-[10px] text-ink-mute sm:block">
@@ -94,7 +89,7 @@ export default function Topbar({ onMenu }) {
       <div className="ml-auto flex items-center gap-3">
         {/* Per-source last synced */}
         <div className="hidden items-center gap-3 md:flex">
-          {visibleSources.map((s) => (
+          {sources.map((s) => (
             <span
               key={s.key}
               className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-mute"
