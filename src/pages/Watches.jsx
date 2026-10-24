@@ -4,7 +4,7 @@ import Pill from '../components/Pill.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import Icon from '../components/Icons.jsx'
 
-const STATUSES = ['Received', 'In progress', 'Waiting on parts', 'Contact for pickup', 'Completed']
+const STATUSES = ['Waiting on parts', 'Contact for pickup', 'Completed']
 
 // Watch repairs list (Square + intake). Statuses are editable; moving a ticket
 // to "Contact for pickup" fires the repair-ready SMS automation (toast + log).

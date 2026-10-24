@@ -52,9 +52,9 @@ function reducer(state, action) {
         ticket: r.ticket || `WR-${1044 + Math.floor(Math.random() * 900)}`,
         watch: r.watch || 'Untitled watch',
         customer: r.customer || 'New customer',
-        detail: 'Logged just now · awaiting diagnosis',
-        status: 'Received',
-        pill: 'gray',
+        detail: 'Logged just now · in the shop',
+        status: 'Waiting on parts',
+        pill: 'gold',
         cost: r.cost || '—',
       }
       return {
@@ -80,8 +80,6 @@ function reducer(state, action) {
 
     case 'SET_REPAIR_STATUS': {
       const map = {
-        Received: { pill: 'gray', detail: 'Received · awaiting diagnosis' },
-        'In progress': { pill: 'gold', detail: 'In progress on the bench' },
         'Waiting on parts': { pill: 'gold', detail: 'Waiting on parts on order' },
         'Contact for pickup': { pill: 'green', detail: 'Ready — contact customer for pickup' },
         Completed: { pill: 'gray', detail: 'Completed · picked up' },

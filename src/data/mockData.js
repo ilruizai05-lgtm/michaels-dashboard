@@ -127,8 +127,8 @@ export const rentals = [
 
 // ── Watch repairs (Square + intake) ────────────────────────────────────────
 // Each ticket has a number (WR-####). Status pipeline (no promised dates):
-// Received → In progress → Waiting on parts → Contact for pickup → Completed.
-// pill: green=ready, gold=active/parts, gray=received/completed
+// Waiting on parts → Contact for pickup → Completed.
+// pill: green=ready for pickup, gold=waiting on parts, gray=completed
 export const initialRepairs = [
   {
     id: 'w1',
@@ -155,8 +155,8 @@ export const initialRepairs = [
     ticket: 'WR-1040',
     watch: 'Tag Heuer Carrera',
     customer: 'J. Park',
-    detail: 'Diagnosed · quote sent',
-    status: 'In progress',
+    detail: 'Diagnosed · waiting on parts on order',
+    status: 'Waiting on parts',
     pill: 'gold',
     cost: '$180',
   },
@@ -165,8 +165,8 @@ export const initialRepairs = [
     ticket: 'WR-1039',
     watch: 'Cartier Tank',
     customer: 'L. Ortiz',
-    detail: 'Battery + service under way',
-    status: 'In progress',
+    detail: 'Battery + service · waiting on parts',
+    status: 'Waiting on parts',
     pill: 'gold',
     cost: '$140',
   },
@@ -175,9 +175,9 @@ export const initialRepairs = [
     ticket: 'WR-1043',
     watch: 'Breitling Navitimer',
     customer: 'A. Rao',
-    detail: 'Logged · awaiting diagnosis',
-    status: 'Received',
-    pill: 'gray',
+    detail: 'In the shop · waiting on parts',
+    status: 'Waiting on parts',
+    pill: 'gold',
     cost: '—',
   },
   {
@@ -185,9 +185,9 @@ export const initialRepairs = [
     ticket: 'WR-1038',
     watch: 'Seiko Prospex',
     customer: 'K. Liu',
-    detail: 'Movement service under way',
-    status: 'In progress',
-    pill: 'gold',
+    detail: 'Serviced · picked up',
+    status: 'Completed',
+    pill: 'gray',
     cost: '$95',
   },
   {
@@ -214,12 +214,12 @@ export const customers = [
 
 // ── Activity log ───────────────────────────────────────────────────────────
 export const initialActivity = [
-  { id: 'a1', who: 'Michael', what: 'Marked Hamilton Khaki · R. Diaz "Ready for pickup"', when: '9:20 am', kind: 'status' },
+  { id: 'a1', who: 'Michael', what: 'Marked Hamilton Khaki · R. Diaz "Contact for pickup"', when: '9:20 am', kind: 'status' },
   { id: 'a2', who: 'System', what: 'Sent repair-ready SMS to R. Diaz', when: '9:20 am', kind: 'automation' },
   { id: 'a3', who: 'Michael', what: 'Logged new intake · Breitling Navitimer · A. Rao', when: '8:14 am', kind: 'intake' },
   { id: 'a4', who: 'Michael', what: 'Signed in', when: '8:02 am', kind: 'auth' },
   { id: 'a5', who: 'System', what: 'Synced TurboTenant · 6 properties', when: '9:41 am', kind: 'sync' },
-  { id: 'a6', who: 'Michael', what: 'Updated Cartier Tank · L. Ortiz to "In progress"', when: 'Apr 26 · 4:36 pm', kind: 'status' },
+  { id: 'a6', who: 'Michael', what: 'Updated Cartier Tank · L. Ortiz to "Waiting on parts"', when: 'Apr 26 · 4:36 pm', kind: 'status' },
 ]
 
 // ── Finances snapshot (owner only) ─────────────────────────────────────────
